@@ -1,0 +1,390 @@
+🏠 Hostel Management System – Module-wise Tasks
+
+1. 👨‍💼 ADMIN MODULE
+
+1.1 Admin Authentication
+
+✅Admin login
+✅Logout
+✅Role-based access control
+
+
+1.2 Dashboard
+
+Total students
+Total wardens
+Total rooms
+Available rooms
+Occupied rooms
+Pending accommodation requests
+Pending complaints
+Pending leave/outing requests
+Payment summary
+
+
+1.3 Student Management
+
+✅View students
+✅Add student
+✅Edit student
+✅Delete/deactivate student
+✅View student profile
+View student room details
+View student history
+Activate/deactivate account
+
+
+1.4 Warden Management
+
+✅Add warden
+✅Edit warden
+✅Delete/deactivate warden
+✅Assign warden to hostel/block
+✅View warden details
+✅Manage warden login
+
+
+1.5 Hostel Management
+
+✅Add block
+✅Add floor
+✅Assign warden to block
+
+
+1.6 Room Management
+
+✅Add room
+✅Edit room
+✅Delete/deactivate room
+✅Set room capacity
+✅View available beds
+✅View occupied beds
+Room allocation overview
+
+
+1.7 Accommodation Management
+
+View accommodation requests
+View pending requests
+Approve/reject requests
+Assign hostel/block
+Monitor accommodation status
+
+
+1.8 Roommate Management
+
+View roommate requests
+View roommate allocations
+Change roommate
+Manage roommate conflicts
+
+
+1.9 Visitor Management
+
+View visitor requests
+View approved/rejected visitors
+View visitor history
+View check-in/check-out records
+
+
+1.10 Complaint Management
+
+View all complaints
+Filter complaints
+Assign complaint to warden
+Change priority
+Monitor complaint status
+View resolved complaints
+
+
+1.11 Notice Management
+
+✅Create notice
+✅Edit notice
+✅Delete notice
+✅View notice
+✅Publish notice
+✅Schedule notice
+
+
+1.12 Payment Management
+
+Configure hostel fees
+View payments
+View pending payments
+Verify payment
+Payment history
+Generate payment reports
+
+
+1.13 Food/Mess Management
+
+✅Manage mess
+✅Add food menu
+✅Edit food menu
+✅Delete menu
+✅View food feedback
+✅View mess complaints
+
+
+1.14 Room Inspection Management
+
+Schedule inspections
+Assign warden
+View inspection reports
+Track room condition
+View inspection history
+
+
+1.15 Attendance Management
+
+View attendance
+Filter attendance by date/student/hostel
+Attendance reports
+Low-attendance monitoring
+
+
+1.16 Leave & Outing Management
+
+View leave requests
+View outing requests
+Monitor approvals
+View students currently outside
+View leave history
+
+-------------------------------------------
+
+👩‍💼 2. WARDEN MODULE
+
+2.1 Warden Authentication
+
+✅Warden login
+✅Logout
+
+
+2.2 Warden Dashboard
+
+Total students under warden
+Room occupancy
+Pending requests
+Pending complaints
+Today's visitors
+Students on leave
+Students on outing
+Attendance summary
+
+
+2.3 Student Management
+
+View assigned students
+View student profile
+Verify student details
+View room information
+View student history
+
+
+
+2.5 Room Management
+
+View assigned rooms
+View available rooms/beds
+Allocate room
+Change room
+Update room occupancy
+View room members
+
+
+
+2.7 Visitor Management
+
+View visitor requests
+Check visitor details
+Approve/reject visitor
+Record visitor check-in
+Record visitor check-out
+View visitor history
+
+
+2.8 Complaint Management
+
+View complaints
+View complaint details
+Assign/accept complaint
+Add response
+Update status
+Mark as resolved
+
+
+Status:
+
+Pending → In Progress → Resolved
+2.9 Notice Management
+Create notice
+Edit notice
+Publish notice
+View admin notices
+Notify assigned students
+
+
+2.10 Food/Mess Management
+
+Add daily menu
+Edit menu
+View food feedback
+View mess complaints
+Update food-related issues
+
+
+2.11 Room Inspection
+
+View inspection schedule
+Inspect room
+Record room condition
+Add remarks
+Upload inspection photos
+Submit inspection report
+
+
+2.13 Leave Management
+
+View leave requests
+Check reason
+Approve/reject leave
+Add remarks
+View leave history
+
+
+2.14 Outing Management
+
+View outing requests
+Verify request
+Approve/reject outing
+Record outing time
+Record return time
+Track students currently outside
+
+1.9 Visitor Management
+
+-------------------------------------------
+
+👨‍🎓 3. STUDENT / USER MODULE
+
+3.1 User Registration
+
+✅Student registration
+✅Enter personal details
+✅Enter parent/guardian details
+✅Upload documents
+✅Create login credentials
+✅Registration status
+
+
+3.2 User Authentication
+
+✅Login
+✅Logout
+
+
+3.3 Student Dashboard
+
+Room details
+Roommate details
+Payment status
+Attendance
+Pending requests
+Notices
+Leave/outing status
+Complaint status
+
+
+
+3.5 Room Allocation
+
+View allocated hostel
+View block/floor
+View room number
+View bed number
+View room capacity
+View roommates
+Request room change
+
+
+
+3.7 Visitor Request
+
+Add visitor details
+Visitor name
+Phone number
+Relationship
+Visit date/time
+Submit request
+Track approval
+View visitor history
+
+
+3.8 Complaint Management
+
+Create complaint
+Select complaint category
+Add description
+Upload image
+Submit complaint
+Track complaint status
+View warden response
+
+
+3.9 Notices
+
+View notices
+View important announcements
+Filter notices
+View notice details
+
+
+3.10 Payment
+
+View hostel fee
+View pending amount
+Make payment
+View payment status
+View payment history
+Download receipt
+
+
+> Payment gateway integration can be added later if required.
+
+3.11 Food/Mess
+
+View daily menu
+View weekly menu
+Submit food feedback
+Submit mess complaint
+View mess announcements
+
+
+3.12 Room Inspection
+
+View inspection schedule
+View inspection result
+View inspection remarks
+View inspection history
+
+
+3.14 Leave & Outing
+
+Leave
+Apply leave
+Enter reason
+Select start/end date
+Track approval
+View leave history
+
+
+Outing
+
+Apply outing
+Enter destination
+Enter reason
+Select outing time
+Track approval
+Check return status
