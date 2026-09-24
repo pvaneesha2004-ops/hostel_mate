@@ -4,30 +4,219 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 require_once '../db.php';
 
-// Ensure warden is authenticated
-if (!isset($_SESSION['warden_id'])) {
-    header("Location: login.php");
+// Directories for student profiles and documents
+$profile_dir = "../student_profile/";
+$doc_dir = "../student_docs/";
+if (!file_exists($profile_dir)) {
+    mkdir($profile_dir, 0777, true);
+}
+if (!file_exists($doc_dir)) {
+    mkdir($doc_dir, 0777, true);
+}
+
+$admin_id = $_SESSION['admin_id'] ?? 1;
+
+// Handle Document Verification (Approve / Reject / Reset)
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action']) && $_POST['action'] == 'update_verification') {
+    $student_id = intval($_POST['student_id'] ?? 0);
+    $verification_status = $_POST['verification_status'] ?? 'pending';
+    $remarks = trim($_POST['remarks'] ?? '');
+
+    if ($student_id > 0 && in_array($verification_status, ['verified', 'rejected', 'pending'])) {
+        $account_status = ($verification_status == 'verified') ? 'active' : 'inactive';
+        $verified_by_val = ($verification_status == 'verified') ? $admin_id : NULL;
+        $verified_at_val = ($verification_status == 'verified') ? date('Y-m-d H:i:s') : NULL;
+
+        // Check if student document record exists
+        $doc_check = $conn->query("SELECT id FROM student_documents WHERE student_id=$student_id");
+        if ($doc_check && $doc_check->num_rows > 0) {
+            $stmt = $conn->prepare("UPDATE student_documents SET verification=?, verified_by=?, verified_at=?, remarks=?, updated_at=NOW() WHERE student_id=?");
+            $stmt->bind_param("sissi", $verification_status, $verified_by_val, $verified_at_val, $remarks, $student_id);
+            $stmt->execute();
+        } else {
+            $stmt = $conn->prepare("INSERT INTO student_documents (student_id, document_type, document_number, file_path, verification, verified_by, verified_at, remarks, created_at, updated_at) VALUES (?, 'College ID', 'N/A', '', ?, ?, ?, ?, NOW(), NOW())");
+            $stmt->bind_param("isiss", $student_id, $verification_status, $verified_by_val, $verified_at_val, $remarks);
+            $stmt->execute();
+        }
+
+        // Update student account status in users table
+        $u_stmt = $conn->prepare("UPDATE users SET status=?, updated_at=NOW() WHERE id=? AND role='student'");
+        $u_stmt->bind_param("si", $account_status, $student_id);
+        $u_stmt->execute();
+
+        // If rejected or reset to pending, vacate any active room allocation
+        if ($verification_status != 'verified') {
+            $alloc_res = $conn->query("SELECT id, bed_id, room_id FROM room_allocations WHERE student_id=$student_id AND status='active'");
+            if ($alloc_res && $alloc = $alloc_res->fetch_assoc()) {
+                $alloc_id = $alloc['id'];
+                $bed_id = $alloc['bed_id'];
+                $room_id = $alloc['room_id'];
+                $conn->query("UPDATE room_allocations SET status='vacated', vacated_date=CURDATE(), updated_at=NOW() WHERE id=$alloc_id");
+                if ($bed_id > 0) { $conn->query("UPDATE beds SET status='available', updated_at=NOW() WHERE id=$bed_id"); }
+                if ($room_id > 0) { $conn->query("UPDATE rooms SET status='available', updated_at=NOW() WHERE id=$room_id AND status='full'"); }
+            }
+        }
+
+        if ($verification_status == 'verified') {
+            $_SESSION['msg'] = "Student documents verified and account activated successfully! Room allocation is now available.";
+        } elseif ($verification_status == 'rejected') {
+            $_SESSION['msg'] = "Student verification marked as Rejected and account set to Inactive.";
+        } else {
+            $_SESSION['msg'] = "Student verification status reset to Pending.";
+        }
+    } else {
+        $_SESSION['error'] = "Invalid verification request.";
+    }
+    header("Location: student.php");
     exit();
 }
 
-$warden_id = $_SESSION['warden_id'];
+// Handle Room & Bed Allocation
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action']) && $_POST['action'] == 'allocate_bed') {
+    $student_id = intval($_POST['student_id'] ?? 0);
+    $block_id = intval($_POST['block_id'] ?? 0);
+    $floor_id = intval($_POST['floor_id'] ?? 0);
+    $room_id = intval($_POST['room_id'] ?? 0);
+    $bed_id = intval($_POST['bed_id'] ?? 0);
+    $allocated_date = !empty($_POST['allocated_date']) ? $_POST['allocated_date'] : date('Y-m-d');
+    $remarks = trim($_POST['remarks'] ?? '');
 
-// Get assigned blocks for this warden (if any)
-$assigned_blocks_res = $conn->query("SELECT wba.block_id, b.name as block_name FROM warden_block_assignments wba JOIN blocks b ON wba.block_id = b.id WHERE wba.warden_id = $warden_id AND wba.status = 'active'");
-$warden_assigned_blocks = [];
-$assigned_block_ids = [];
-if ($assigned_blocks_res && $assigned_blocks_res->num_rows > 0) {
-    while ($ab = $assigned_blocks_res->fetch_assoc()) {
-        $warden_assigned_blocks[] = $ab;
-        $assigned_block_ids[] = intval($ab['block_id']);
+    // 0. Verify that student is verified before allowing allocation
+    $stu_check = $conn->query("SELECT d.verification FROM users u LEFT JOIN student_documents d ON u.id = d.student_id WHERE u.id = $student_id AND u.role = 'student'");
+    if ($stu_check && $stu = $stu_check->fetch_assoc()) {
+        if (strtolower($stu['verification'] ?? '') !== 'verified') {
+            $_SESSION['error'] = "Cannot allocate room! Student document verification is pending or rejected. Please verify the student first.";
+            header("Location: student.php");
+            exit();
+        }
     }
+
+    if ($student_id > 0 && $block_id > 0 && $floor_id > 0 && $room_id > 0 && $bed_id > 0) {
+        // 1. Free any previous active allocation for this student
+        $active_alloc = $conn->query("SELECT id, bed_id, room_id FROM room_allocations WHERE student_id=$student_id AND status='active'");
+        if ($active_alloc && $active_alloc->num_rows > 0) {
+            while ($prev = $active_alloc->fetch_assoc()) {
+                $prev_alloc_id = $prev['id'];
+                $prev_bed_id = $prev['bed_id'];
+                $prev_room_id = $prev['room_id'];
+
+                $conn->query("UPDATE room_allocations SET status='vacated', vacated_date=CURDATE(), updated_at=NOW() WHERE id=$prev_alloc_id");
+                if ($prev_bed_id != $bed_id && $prev_bed_id > 0) {
+                    $conn->query("UPDATE beds SET status='available', updated_at=NOW() WHERE id=$prev_bed_id");
+                }
+                if ($prev_room_id != $room_id && $prev_room_id > 0) {
+                    $conn->query("UPDATE rooms SET status='available', updated_at=NOW() WHERE id=$prev_room_id AND status='full'");
+                }
+            }
+        }
+
+        // 2. Insert new room allocation
+        $stmt = $conn->prepare("INSERT INTO room_allocations (student_id, block_id, floor_id, room_id, bed_id, allocated_by, allocated_date, status, remarks, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NOW(), NOW())");
+        $stmt->bind_param("iiiiisss", $student_id, $block_id, $floor_id, $room_id, $bed_id, $admin_id, $allocated_date, $remarks);
+
+        if ($stmt->execute()) {
+            // 3. Mark newly allocated bed as occupied
+            $conn->query("UPDATE beds SET status='occupied', updated_at=NOW() WHERE id=$bed_id");
+
+            // 4. Update room status to 'full' if all its beds are occupied
+            $bed_check = $conn->query("SELECT COUNT(*) as total_beds, SUM(CASE WHEN status='occupied' THEN 1 ELSE 0 END) as occupied_beds FROM beds WHERE room_id=$room_id");
+            if ($bed_check && $b_row = $bed_check->fetch_assoc()) {
+                if ($b_row['total_beds'] > 0 && $b_row['total_beds'] == $b_row['occupied_beds']) {
+                    $conn->query("UPDATE rooms SET status='full', updated_at=NOW() WHERE id=$room_id");
+                }
+            }
+
+            // 5. Insert data into student_fee_history table
+            $room_price = 0;
+            $r_check = $conn->query("SELECT price FROM rooms WHERE id=$room_id");
+            if ($r_check && $r_data = $r_check->fetch_assoc()) {
+                $room_price = intval($r_data['price'] ?? 0);
+            }
+            $fee_date = strtotime($allocated_date) ?: time();
+
+            $fee_stmt = $conn->prepare("INSERT INTO student_fee_history (student_id, price, date, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())");
+            if ($fee_stmt) {
+                $fee_stmt->bind_param("iii", $student_id, $room_price, $fee_date);
+                $fee_stmt->execute();
+            }
+
+            $_SESSION['msg'] = "Room and Bed allocated successfully, and fee record added to student fee history.";
+        } else {
+            $_SESSION['error'] = "Failed to allocate room: " . $conn->error;
+        }
+    } else {
+        $_SESSION['error'] = "Please select all required allocation fields.";
+    }
+    header("Location: student.php");
+    exit();
 }
 
-// Fetch all blocks for optional filtering
-$blocks_res = $conn->query("SELECT id, name FROM blocks WHERE status='active' OR status='1' ORDER BY name ASC");
-$all_blocks = [];
-if ($blocks_res && $blocks_res->num_rows > 0) {
-    while($b = $blocks_res->fetch_assoc()) { $all_blocks[] = $b; }
+// Handle Deallocation / Vacate
+if (isset($_GET['deallocate'])) {
+    $alloc_id = intval($_GET['deallocate']);
+    $alloc_res = $conn->query("SELECT id, bed_id, room_id FROM room_allocations WHERE id=$alloc_id AND status='active'");
+    if ($alloc_res && $alloc = $alloc_res->fetch_assoc()) {
+        $bed_id = $alloc['bed_id'];
+        $room_id = $alloc['room_id'];
+
+        $conn->query("UPDATE room_allocations SET status='vacated', vacated_date=CURDATE(), updated_at=NOW() WHERE id=$alloc_id");
+        if ($bed_id > 0) {
+            $conn->query("UPDATE beds SET status='available', updated_at=NOW() WHERE id=$bed_id");
+        }
+        if ($room_id > 0) {
+            $conn->query("UPDATE rooms SET status='available', updated_at=NOW() WHERE id=$room_id AND status='full'");
+        }
+        $_SESSION['msg'] = "Student deallocated and bed marked available successfully.";
+    } else {
+        $_SESSION['error'] = "Active allocation not found.";
+    }
+    header("Location: student.php");
+    exit();
+}
+
+// Handle Delete Student Action
+if (isset($_GET['delete'])) {
+    $id = intval($_GET['delete']);
+
+    // Free active bed before deletion
+    $alloc_res = $conn->query("SELECT bed_id, room_id FROM room_allocations WHERE student_id=$id AND status='active'");
+    if ($alloc_res && $alloc = $alloc_res->fetch_assoc()) {
+        $bed_id = $alloc['bed_id'];
+        $room_id = $alloc['room_id'];
+        if ($bed_id > 0) {
+            $conn->query("UPDATE beds SET status='available', updated_at=NOW() WHERE id=$bed_id");
+        }
+        if ($room_id > 0) {
+            $conn->query("UPDATE rooms SET status='available', updated_at=NOW() WHERE id=$room_id AND status='full'");
+        }
+    }
+    $conn->query("DELETE FROM room_allocations WHERE student_id=$id");
+
+    // Delete profile image & document file if exist
+    $u_res = $conn->query("SELECT profile_image FROM users WHERE id=$id");
+    if ($u_res && $u_row = $u_res->fetch_assoc()) {
+        if (!empty($u_row['profile_image']) && file_exists($profile_dir . $u_row['profile_image'])) {
+            @unlink($profile_dir . $u_row['profile_image']);
+        }
+    }
+    $d_res = $conn->query("SELECT file_path FROM student_documents WHERE student_id=$id");
+    if ($d_res && $d_row = $d_res->fetch_assoc()) {
+        if (!empty($d_row['file_path']) && file_exists($doc_dir . $d_row['file_path'])) {
+            @unlink($doc_dir . $d_row['file_path']);
+        }
+    }
+
+    $conn->query("DELETE FROM student_documents WHERE student_id=$id");
+    $conn->query("DELETE FROM student_guardians WHERE student_id=$id");
+    $stmt = $conn->prepare("DELETE FROM users WHERE id=? AND role='student'");
+    $stmt->bind_param("i", $id);
+    if ($stmt->execute()) {
+        $_SESSION['msg'] = "Student deleted successfully.";
+    } else {
+        $_SESSION['error'] = "Failed to delete student.";
+    }
+    header("Location: student.php");
+    exit();
 }
 
 // Fetch all students with guardian, document, and active room allocation details
@@ -71,26 +260,29 @@ $query = "
 ";
 $students = $conn->query($query);
 
-// Pre-calculate summary statistics
-$total_students = 0;
-$verified_count = 0;
-$allocated_count = 0;
-$pending_count = 0;
+// Fetch data for cascading allocation dropdowns
+$blocks_res = $conn->query("SELECT id, name FROM blocks WHERE status='active' OR status='1' ORDER BY name ASC");
+$all_blocks = [];
+if ($blocks_res && $blocks_res->num_rows > 0) {
+    while($b = $blocks_res->fetch_assoc()) { $all_blocks[] = $b; }
+}
 
-$student_rows = [];
-if ($students && $students->num_rows > 0) {
-    while ($row = $students->fetch_assoc()) {
-        $student_rows[] = $row;
-        $total_students++;
-        if (strtolower($row['verification'] ?? '') === 'verified') {
-            $verified_count++;
-        } elseif (strtolower($row['verification'] ?? '') === 'pending' || empty($row['verification'])) {
-            $pending_count++;
-        }
-        if (!empty($row['allocation_id'])) {
-            $allocated_count++;
-        }
-    }
+$floors_res = $conn->query("SELECT id, block_id, name, floor_number FROM floors ORDER BY floor_number ASC, name ASC");
+$all_floors = [];
+if ($floors_res && $floors_res->num_rows > 0) {
+    while($f = $floors_res->fetch_assoc()) { $all_floors[] = $f; }
+}
+
+$rooms_res = $conn->query("SELECT id, floor_id, room_number, room_type, capacity, price FROM rooms WHERE status != 'inactive' ORDER BY room_number ASC");
+$all_rooms = [];
+if ($rooms_res && $rooms_res->num_rows > 0) {
+    while($r = $rooms_res->fetch_assoc()) { $all_rooms[] = $r; }
+}
+
+$beds_res = $conn->query("SELECT id, room_id, bed_number, status FROM beds ORDER BY bed_number ASC");
+$all_beds = [];
+if ($beds_res && $beds_res->num_rows > 0) {
+    while($bd = $beds_res->fetch_assoc()) { $all_beds[] = $bd; }
 }
 
 // Fetch Fee History by student
@@ -120,199 +312,282 @@ if ($fee_history_res && $fee_history_res->num_rows > 0) {
     }
 }
 
-ob_start();
+ob_start(); 
 ?>
 
-<!-- Page Header & Title -->
-<div class="row mb-4">
-    <div class="col-12 d-flex flex-column flex-md-row justify-content-between align-items-md-center">
-        <div>
-            <h3 class="font-weight-bold text-dark mb-1">Student Directory</h3>
-            <p class="text-muted mb-0">View student profiles, room & bed allocations, guardian contacts, and verification records.</p>
-        </div>
-        <?php if (!empty($warden_assigned_blocks)): ?>
-            <div class="mt-3 mt-md-0">
-                <span class="badge badge-success py-2 px-3 shadow-sm" style="font-size: 0.85rem; border-radius: 8px;">
-                    <i class="ti-home mr-1"></i> Assigned Block: 
-                    <strong><?= htmlspecialchars(implode(', ', array_column($warden_assigned_blocks, 'block_name'))) ?></strong>
-                </span>
-            </div>
-        <?php endif; ?>
-    </div>
-</div>
+<style>
+/* Custom Action Button Styling matching reference UI */
+.action-btn-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+}
 
-<!-- Summary Statistics Cards -->
-<div class="row mb-4">
-    <div class="col-xl-3 col-sm-6 grid-margin stretch-card mb-3 mb-xl-0">
-        <div class="card border-0 shadow-sm rounded-16" style="border-left: 4px solid #059669 !important;">
-            <div class="card-body p-3 d-flex align-items-center justify-content-between">
-                <div>
-                    <span class="text-muted font-weight-medium small text-uppercase">Total Students</span>
-                    <h3 class="font-weight-bold text-dark mb-0 mt-1"><?= $total_students ?></h3>
-                </div>
-                <div class="rounded-circle d-flex align-items-center justify-content-center" style="width: 48px; height: 48px; background: rgba(5, 150, 105, 0.12); color: #059669;">
-                    <i class="ti-user" style="font-size: 20px;"></i>
-                </div>
-            </div>
-        </div>
-    </div>
+.action-btn-group .btn-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 34px;
+    border: none !important;
+    border-radius: 50px !important;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #ffffff !important;
+    transition: all 0.2s ease-in-out;
+    cursor: pointer;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.12);
+    text-decoration: none !important;
+    outline: none !important;
+    padding: 0;
+}
 
-    <div class="col-xl-3 col-sm-6 grid-margin stretch-card mb-3 mb-xl-0">
-        <div class="card border-0 shadow-sm rounded-16" style="border-left: 4px solid #10b981 !important;">
-            <div class="card-body p-3 d-flex align-items-center justify-content-between">
-                <div>
-                    <span class="text-muted font-weight-medium small text-uppercase">Allocated Rooms</span>
-                    <h3 class="font-weight-bold text-dark mb-0 mt-1"><?= $allocated_count ?></h3>
-                </div>
-                <div class="rounded-circle d-flex align-items-center justify-content-center" style="width: 48px; height: 48px; background: rgba(16, 185, 129, 0.12); color: #10b981;">
-                    <i class="ti-layout-grid2" style="font-size: 20px;"></i>
-                </div>
-            </div>
-        </div>
-    </div>
+.action-btn-group .btn-action:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.22);
+    color: #ffffff !important;
+}
 
-    <div class="col-xl-3 col-sm-6 grid-margin stretch-card mb-3 mb-xl-0">
-        <div class="card border-0 shadow-sm rounded-16" style="border-left: 4px solid #3b82f6 !important;">
-            <div class="card-body p-3 d-flex align-items-center justify-content-between">
-                <div>
-                    <span class="text-muted font-weight-medium small text-uppercase">Verified Status</span>
-                    <h3 class="font-weight-bold text-dark mb-0 mt-1"><?= $verified_count ?></h3>
-                </div>
-                <div class="rounded-circle d-flex align-items-center justify-content-center" style="width: 48px; height: 48px; background: rgba(59, 130, 246, 0.12); color: #3b82f6;">
-                    <i class="ti-check-box" style="font-size: 20px;"></i>
-                </div>
-            </div>
-        </div>
-    </div>
+.action-btn-group .btn-action:active {
+    transform: translateY(0);
+}
 
-    <div class="col-xl-3 col-sm-6 grid-margin stretch-card mb-3 mb-xl-0">
-        <div class="card border-0 shadow-sm rounded-16" style="border-left: 4px solid #f59e0b !important;">
-            <div class="card-body p-3 d-flex align-items-center justify-content-between">
-                <div>
-                    <span class="text-muted font-weight-medium small text-uppercase">Pending / Review</span>
-                    <h3 class="font-weight-bold text-dark mb-0 mt-1"><?= $pending_count ?></h3>
-                </div>
-                <div class="rounded-circle d-flex align-items-center justify-content-center" style="width: 48px; height: 48px; background: rgba(245, 158, 11, 0.12); color: #f59e0b;">
-                    <i class="ti-time" style="font-size: 20px;"></i>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+/* Icon Only Pill Buttons (View / Delete) */
+.action-btn-group .btn-action-icon {
+    width: 44px;
+    height: 34px;
+}
 
-<!-- Student List Table Card -->
+.action-btn-group .btn-action-icon i {
+    font-size: 15px;
+    line-height: 1;
+}
+
+/* Text + Icon Pill Buttons (Allocate / Verify) */
+.action-btn-group .btn-action-text {
+    padding: 0 16px;
+    height: 34px;
+}
+
+.action-btn-group .btn-action-text i {
+    font-size: 14px;
+    margin-right: 6px;
+}
+
+/* Color Variants matching design */
+.action-btn-group .btn-view {
+    background: #f59e0b !important; /* Amber / Orange */
+    box-shadow: 0 4px 10px rgba(245, 158, 11, 0.35) !important;
+}
+.action-btn-group .btn-view:hover {
+    background: #d97706 !important;
+}
+
+.action-btn-group .btn-allocate {
+    background: #0d9488 !important; /* Teal */
+    box-shadow: 0 4px 10px rgba(13, 148, 136, 0.35) !important;
+}
+.action-btn-group .btn-allocate:hover {
+    background: #0f766e !important;
+}
+
+.action-btn-group .btn-verify {
+    background: #f59e0b !important; /* Amber / Orange warning */
+    box-shadow: 0 4px 10px rgba(245, 158, 11, 0.35) !important;
+}
+.action-btn-group .btn-verify:hover {
+    background: #d97706 !important;
+}
+
+.action-btn-group .btn-delete {
+    background: #ef4444 !important; /* Red */
+    box-shadow: 0 4px 10px rgba(239, 68, 68, 0.35) !important;
+}
+.action-btn-group .btn-delete:hover {
+    background: #dc2626 !important;
+}
+</style>
+
+
 <div class="row">
     <div class="col-lg-12 grid-margin stretch-card">
-        <div class="card border-0 shadow-sm rounded-16">
+        <div class="card">
             <div class="card-body">
-                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3">
-                    <h4 class="card-title font-weight-bold mb-0 text-dark">
-                        <i class="ti-id-badge mr-2 text-success"></i>All Registered Students
-                    </h4>
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h4 class="card-title mb-0">Student Management</h4>
                 </div>
+                
+                <?php if(isset($_SESSION['msg'])): ?>
+                <div class="alert alert-success alert-dismissible fade show" role="alert">
+                    <?= htmlspecialchars($_SESSION['msg']) ?>
+                    <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <?php unset($_SESSION['msg']); endif; ?>
 
+                <?php if(isset($_SESSION['error'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    <?= htmlspecialchars($_SESSION['error']) ?>
+                    <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <?php unset($_SESSION['error']); endif; ?>
+                
                 <div class="table-responsive">
-                    <table class="table table-hover datatable align-middle">
-                        <thead class="bg-light">
+                    <table class="table table-hover datatable">
+                        <thead>
                             <tr>
-                                <th style="width: 50px;">SlNo</th>
-                                <th style="width: 60px;">Photo</th>
-                                <th>Student Name</th>
-                                <th>Email / Mobile</th>
-                                <th>Verification</th>
-                                <th>Room & Bed Allocation</th>
-                                <th>Account</th>
-                                <th style="width: 90px;" class="text-center">Action</th>
+                                <th>SlNo</th>
+                                <th>Profile</th>
+                                <th>Name</th>
+                                <th>Email/Phone</th>
+                                <th>Verification Status</th>
+                                <th>Allocated Bed</th>
+                                <th>Account Status</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php 
-                            $sl = 1; 
-                            foreach($student_rows as $row): 
-                                $isVerified = (strtolower($row['verification'] ?? '') === 'verified');
-                            ?>
+                            <?php $sl = 1; while($row = $students->fetch_assoc()): ?>
+                            <?php $isVerified = (strtolower($row['verification'] ?? '') === 'verified'); ?>
                             <tr>
                                 <td><?= $sl++ ?></td>
                                 <td>
                                     <?php if (!empty($row['profile_image']) && file_exists('../student_profile/' . $row['profile_image'])): ?>
-                                        <img src="../student_profile/<?= htmlspecialchars($row['profile_image']) ?>" alt="Profile" style="width: 42px; height: 42px; border-radius: 50%; object-fit: cover; border: 2px solid #e2e8f0;">
+                                        <img src="../student_profile/<?= htmlspecialchars($row['profile_image']) ?>" alt="Profile" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover;">
                                     <?php else: ?>
-                                        <div style="width: 42px; height: 42px; border-radius: 50%; background: #e2e8f0; color: #64748b; display: inline-flex; align-items: center; justify-content: center; font-weight: 600;">
+                                        <div style="width: 40px; height: 40px; border-radius: 50%; background: #e0e0e0; color: #666; display: inline-flex; align-items: center; justify-content: center;">
                                             <i class="ti-user"></i>
                                         </div>
                                     <?php endif; ?>
                                 </td>
-                                <td>
-                                    <span class="font-weight-bold text-dark"><?= htmlspecialchars($row['name']) ?></span>
-                                </td>
-                                <td>
-                                    <div class="text-dark"><i class="ti-email mr-1 text-muted"></i><?= htmlspecialchars($row['email']) ?></div>
-                                    <small class="text-muted"><i class="ti-mobile mr-1"></i><?= htmlspecialchars($row['phone']) ?></small>
-                                </td>
+                                <td><span class="font-weight-bold"><?= htmlspecialchars($row['name']) ?></span></td>
+                                <td><?= htmlspecialchars($row['email']) ?><br><small class="text-muted"><?= htmlspecialchars($row['phone']) ?></small></td>
                                 <td>
                                     <?php 
                                         $ver = strtolower($row['verification'] ?? 'pending');
                                         if($ver == 'verified'): ?>
-                                            <span class="badge badge-success py-1 px-2"><i class="ti-check mr-1"></i>Verified</span>
+                                            <span class="badge badge-success"><i class="ti-check mr-1"></i>Verified</span>
                                         <?php elseif($ver == 'rejected'): ?>
-                                            <span class="badge badge-danger py-1 px-2"><i class="ti-close mr-1"></i>Rejected</span>
+                                            <button class="btn btn-outline-danger btn-xs verify-btn" 
+                                                data-student_id="<?= $row['id'] ?>"
+                                                data-name="<?= htmlspecialchars($row['name']) ?>"
+                                                data-email="<?= htmlspecialchars($row['email']) ?>"
+                                                data-phone="<?= htmlspecialchars($row['phone']) ?>"
+                                                data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
+                                                data-document_type="<?= htmlspecialchars($row['document_type'] ?? 'College ID') ?>"
+                                                data-document_number="<?= htmlspecialchars($row['document_number'] ?? 'N/A') ?>"
+                                                data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
+                                                data-verification="<?= htmlspecialchars($row['verification'] ?? 'rejected') ?>"
+                                                data-doc_remarks="<?= htmlspecialchars($row['doc_remarks'] ?? '') ?>"
+                                                data-toggle="modal" data-target="#verifyModal" title="Click to Re-evaluate Verification">
+                                                <i class="ti-close mr-1"></i>Rejected
+                                            </button>
                                         <?php else: ?>
-                                            <span class="badge badge-warning text-dark py-1 px-2"><i class="ti-time mr-1"></i>Pending</span>
+                                            <button class="btn btn-warning btn-xs verify-btn font-weight-bold" 
+                                                data-student_id="<?= $row['id'] ?>"
+                                                data-name="<?= htmlspecialchars($row['name']) ?>"
+                                                data-email="<?= htmlspecialchars($row['email']) ?>"
+                                                data-phone="<?= htmlspecialchars($row['phone']) ?>"
+                                                data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
+                                                data-document_type="<?= htmlspecialchars($row['document_type'] ?? 'College ID') ?>"
+                                                data-document_number="<?= htmlspecialchars($row['document_number'] ?? 'N/A') ?>"
+                                                data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
+                                                data-verification="<?= htmlspecialchars($row['verification'] ?? 'pending') ?>"
+                                                data-doc_remarks="<?= htmlspecialchars($row['doc_remarks'] ?? '') ?>"
+                                                data-toggle="modal" data-target="#verifyModal" title="Click to Verify Documents">
+                                                <i class="ti-time mr-1"></i>Pending (Verify)
+                                            </button>
                                         <?php endif; ?>
                                 </td>
                                 <td>
                                     <?php if (!empty($row['allocation_id'])): ?>
-                                        <div class="badge badge-info py-1 px-2 mb-1" style="background-color: #0284c7;">
-                                            <i class="ti-home mr-1"></i><?= htmlspecialchars($row['allocated_block_name'] ?? '') ?> &bull; <?= htmlspecialchars($row['allocated_floor_name'] ?? '') ?>
-                                        </div><br>
-                                        <small class="font-weight-bold text-dark">
-                                            Room <?= htmlspecialchars($row['allocated_room_number'] ?? '') ?> &bull; 
-                                            <span class="text-primary font-weight-bold">Bed <?= htmlspecialchars($row['allocated_bed_number'] ?? '') ?></span>
-                                        </small>
+                                        <span class="badge badge-info mb-1"><i class="ti-home mr-1"></i><?= htmlspecialchars($row['allocated_block_name'] ?? '') ?> (<?= htmlspecialchars($row['allocated_floor_name'] ?? '') ?>)</span><br>
+                                        <small class="font-weight-bold text-dark">Room <?= htmlspecialchars($row['allocated_room_number'] ?? '') ?> | Bed <?= htmlspecialchars($row['allocated_bed_number'] ?? '') ?></small>
                                     <?php else: ?>
-                                        <span class="badge badge-light border text-muted py-1 px-2 font-italic">Not Allocated</span>
+                                        <span class="badge badge-light border text-muted">Not Allocated</span>
                                     <?php endif; ?>
                                 </td>
                                 <td>
                                     <?php if($row['status'] == 'active'): ?>
-                                        <span class="badge badge-success py-1 px-2">Active</span>
+                                        <label class="badge badge-success">Active</label>
                                     <?php else: ?>
-                                        <span class="badge badge-secondary py-1 px-2">Inactive</span>
+                                        <label class="badge badge-danger">Inactive</label>
                                     <?php endif; ?>
                                 </td>
-                                <td class="text-center">
-                                    <!-- View Student Details Button -->
-                                    <button type="button" class="btn btn-warning btn-sm view-btn shadow-sm" title="View Full Student Details"
-                                        data-id="<?= $row['id'] ?>"
-                                        data-name="<?= htmlspecialchars($row['name']) ?>"
-                                        data-email="<?= htmlspecialchars($row['email']) ?>"
-                                        data-phone="<?= htmlspecialchars($row['phone']) ?>"
-                                        data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
-                                        data-status="<?= htmlspecialchars($row['status']) ?>"
-                                        data-guardian_name="<?= htmlspecialchars($row['guardian_name'] ?? '') ?>"
-                                        data-guardian_relationship="<?= htmlspecialchars($row['guardian_relationship'] ?? '') ?>"
-                                        data-guardian_phone="<?= htmlspecialchars($row['guardian_phone'] ?? '') ?>"
-                                        data-guardian_email="<?= htmlspecialchars($row['guardian_email'] ?? '') ?>"
-                                        data-guardian_address="<?= htmlspecialchars($row['guardian_address'] ?? '') ?>"
-                                        data-document_type="<?= htmlspecialchars($row['document_type'] ?? '') ?>"
-                                        data-document_number="<?= htmlspecialchars($row['document_number'] ?? '') ?>"
-                                        data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
-                                        data-verification="<?= htmlspecialchars($row['verification'] ?? 'pending') ?>"
-                                        data-doc_remarks="<?= htmlspecialchars($row['doc_remarks'] ?? '') ?>"
-                                        data-allocation_id="<?= $row['allocation_id'] ?? '' ?>"
-                                        data-allocated_block_name="<?= htmlspecialchars($row['allocated_block_name'] ?? '') ?>"
-                                        data-allocated_floor_name="<?= htmlspecialchars($row['allocated_floor_name'] ?? '') ?>"
-                                        data-allocated_room_number="<?= htmlspecialchars($row['allocated_room_number'] ?? '') ?>"
-                                        data-allocated_room_type="<?= htmlspecialchars($row['allocated_room_type'] ?? '') ?>"
-                                        data-allocated_room_price="<?= htmlspecialchars($row['allocated_room_price'] ?? '') ?>"
-                                        data-allocated_bed_number="<?= htmlspecialchars($row['allocated_bed_number'] ?? '') ?>"
-                                        data-allocated_date="<?= htmlspecialchars($row['allocated_date'] ?? '') ?>"
-                                        data-toggle="modal" data-target="#viewModal">
-                                        <i class="ti-eye mr-1"></i>View
-                                    </button>
+                                <td>
+                                    <div class="action-btn-group">
+                                        <!-- View Details Button -->
+                                        <button class="btn-action btn-action-icon btn-view view-btn" title="View Details"
+                                            data-id="<?= $row['id'] ?>"
+                                            data-name="<?= htmlspecialchars($row['name']) ?>"
+                                            data-email="<?= htmlspecialchars($row['email']) ?>"
+                                            data-phone="<?= htmlspecialchars($row['phone']) ?>"
+                                            data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
+                                            data-status="<?= htmlspecialchars($row['status']) ?>"
+                                            data-guardian_name="<?= htmlspecialchars($row['guardian_name'] ?? '') ?>"
+                                            data-guardian_relationship="<?= htmlspecialchars($row['guardian_relationship'] ?? '') ?>"
+                                            data-guardian_phone="<?= htmlspecialchars($row['guardian_phone'] ?? '') ?>"
+                                            data-guardian_email="<?= htmlspecialchars($row['guardian_email'] ?? '') ?>"
+                                            data-guardian_address="<?= htmlspecialchars($row['guardian_address'] ?? '') ?>"
+                                            data-document_type="<?= htmlspecialchars($row['document_type'] ?? '') ?>"
+                                            data-document_number="<?= htmlspecialchars($row['document_number'] ?? '') ?>"
+                                            data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
+                                            data-verification="<?= htmlspecialchars($row['verification'] ?? 'pending') ?>"
+                                            data-doc_remarks="<?= htmlspecialchars($row['doc_remarks'] ?? '') ?>"
+                                            data-allocation_id="<?= $row['allocation_id'] ?? '' ?>"
+                                            data-allocated_block_name="<?= htmlspecialchars($row['allocated_block_name'] ?? '') ?>"
+                                            data-allocated_floor_name="<?= htmlspecialchars($row['allocated_floor_name'] ?? '') ?>"
+                                            data-allocated_room_number="<?= htmlspecialchars($row['allocated_room_number'] ?? '') ?>"
+                                            data-allocated_room_type="<?= htmlspecialchars($row['allocated_room_type'] ?? '') ?>"
+                                            data-allocated_room_price="<?= htmlspecialchars($row['allocated_room_price'] ?? '') ?>"
+                                            data-allocated_bed_number="<?= htmlspecialchars($row['allocated_bed_number'] ?? '') ?>"
+                                            data-allocated_date="<?= htmlspecialchars($row['allocated_date'] ?? '') ?>"
+                                            data-toggle="modal" data-target="#viewModal"><i class="ti-eye"></i></button>
+
+                                        <!-- Allocation / Verify First Button -->
+                                        <?php if ($isVerified): ?>
+                                            <button class="btn-action btn-action-text btn-allocate allocate-btn" title="Room & Bed Allocation"
+                                                data-student_id="<?= $row['id'] ?>"
+                                                data-name="<?= htmlspecialchars($row['name']) ?>"
+                                                data-email="<?= htmlspecialchars($row['email']) ?>"
+                                                data-phone="<?= htmlspecialchars($row['phone']) ?>"
+                                                data-allocation_id="<?= $row['allocation_id'] ?? '' ?>"
+                                                data-block_id="<?= $row['block_id'] ?? '' ?>"
+                                                data-floor_id="<?= $row['floor_id'] ?? '' ?>"
+                                                data-room_id="<?= $row['room_id'] ?? '' ?>"
+                                                data-bed_id="<?= $row['bed_id'] ?? '' ?>"
+                                                data-allocated_date="<?= $row['allocated_date'] ?? '' ?>"
+                                                data-allocated_block_name="<?= htmlspecialchars($row['allocated_block_name'] ?? '') ?>"
+                                                data-allocated_floor_name="<?= htmlspecialchars($row['allocated_floor_name'] ?? '') ?>"
+                                                data-allocated_room_number="<?= htmlspecialchars($row['allocated_room_number'] ?? '') ?>"
+                                                data-allocated_room_price="<?= htmlspecialchars($row['allocated_room_price'] ?? '') ?>"
+                                                data-allocated_bed_number="<?= htmlspecialchars($row['allocated_bed_number'] ?? '') ?>"
+                                                data-alloc_remarks="<?= htmlspecialchars($row['alloc_remarks'] ?? '') ?>"
+                                                data-toggle="modal" data-target="#allocationModal"><i class="ti-layout-grid2"></i>Allocate</button>
+                                        <?php else: ?>
+                                            <button class="btn-action btn-action-text btn-verify verify-btn" title="Verification Required Before Allocation"
+                                                data-student_id="<?= $row['id'] ?>"
+                                                data-name="<?= htmlspecialchars($row['name']) ?>"
+                                                data-email="<?= htmlspecialchars($row['email']) ?>"
+                                                data-phone="<?= htmlspecialchars($row['phone']) ?>"
+                                                data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
+                                                data-document_type="<?= htmlspecialchars($row['document_type'] ?? 'College ID') ?>"
+                                                data-document_number="<?= htmlspecialchars($row['document_number'] ?? 'N/A') ?>"
+                                                data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
+                                                data-verification="<?= htmlspecialchars($row['verification'] ?? 'pending') ?>"
+                                                data-doc_remarks="<?= htmlspecialchars($row['doc_remarks'] ?? '') ?>"
+                                                data-toggle="modal" data-target="#verifyModal"><i class="ti-check-box"></i>Verify First</button>
+                                        <?php endif; ?>
+
+                                        <!-- Delete Button -->
+                                        <a href="javascript:void(0);" data-url="student.php?delete=<?= $row['id'] ?>" class="btn-action btn-action-icon btn-delete delete-btn" title="Delete"><i class="ti-trash"></i></a>
+                                    </div>
                                 </td>
                             </tr>
-                            <?php endforeach; ?>
+                            <?php endwhile; ?>
                         </tbody>
                     </table>
                 </div>
@@ -320,6 +595,153 @@ ob_start();
         </div>
     </div>
 </div>
+
+<!-- Verification Modal -->
+<div class="modal fade" id="verifyModal" tabindex="-1" role="dialog">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <form method="POST" action="" id="verifyForm">
+          <div class="modal-header">
+            <h5 class="modal-title">Document & Student Verification</h5>
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" name="action" value="update_verification">
+            <input type="hidden" name="student_id" id="verify_student_id">
+            <input type="hidden" name="verification_status" id="verify_status_input" value="verified">
+
+            <!-- Student Summary Banner -->
+            <div class="d-flex align-items-center p-3 mb-3 rounded" style="background: #f8f9fa; border: 1px solid #e9ecef;">
+                <div id="verify_profile_img_wrapper" class="mr-3"></div>
+                <div>
+                    <h5 class="mb-1 font-weight-bold" id="verify_student_name"></h5>
+                    <p class="mb-0 text-muted small"><i class="ti-email mr-1"></i><span id="verify_student_email"></span> | <i class="ti-mobile mr-1"></i><span id="verify_student_phone"></span></p>
+                </div>
+            </div>
+
+            <!-- Verification Notice Box -->
+            <div class="alert alert-warning py-2 px-3 mb-3 rounded small" id="verify_notice_box">
+                <i class="ti-alert mr-1"></i> <strong>Note:</strong> Verifying documents will activate the student account and unlock the <strong>Room & Bed Allocation</strong> button.
+            </div>
+
+            <!-- Document Details Card -->
+            <div class="card border mb-3">
+                <div class="card-header bg-light py-2 font-weight-bold">
+                    <i class="ti-id-badge mr-1"></i> Submitted Document Details
+                </div>
+                <div class="card-body p-3">
+                    <div class="mb-2"><strong>Document Type:</strong> <span id="verify_doc_type" class="text-primary font-weight-medium"></span></div>
+                    <div class="mb-2"><strong>Document Number:</strong> <span id="verify_doc_number" class="font-weight-medium"></span></div>
+                    <div class="mb-2"><strong>Current Status:</strong> <span id="verify_current_status_badge"></span></div>
+                    <div class="mt-3" id="verify_doc_file_wrapper"></div>
+                </div>
+            </div>
+
+            <!-- Verification Remarks -->
+            <div class="form-group">
+                <label>Verification Remarks / Feedback</label>
+                <textarea name="remarks" id="verify_remarks" class="form-control" rows="2" placeholder="e.g. Documents verified against original college ID"></textarea>
+            </div>
+          </div>
+          <div class="modal-footer d-flex justify-content-between">
+            <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            <div>
+                <button type="button" class="btn btn-danger mr-1" id="btn_reject_verification"><i class="ti-close mr-1"></i>Reject</button>
+                <button type="button" class="btn btn-success" id="btn_approve_verification"><i class="ti-check mr-1"></i>Approve & Verify</button>
+            </div>
+          </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Allocation Modal -->
+<div class="modal fade" id="allocationModal" tabindex="-1" role="dialog">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <form method="POST" action="" id="allocForm">
+          <div class="modal-header">
+            <h5 class="modal-title">Room & Bed Allocation</h5>
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" name="action" value="allocate_bed">
+            <input type="hidden" name="student_id" id="alloc_student_id">
+
+            <!-- Student Summary Banner -->
+            <div class="p-3 mb-3 rounded" style="background: #eff6ff; border: 1px solid #bfdbfe;">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="mb-1 font-weight-bold text-primary" id="alloc_student_name"></h6>
+                        <small class="text-muted"><i class="ti-email mr-1"></i><span id="alloc_student_email"></span> | <i class="ti-mobile mr-1"></i><span id="alloc_student_phone"></span></small>
+                    </div>
+                    <span class="badge badge-success"><i class="ti-check mr-1"></i>Verified</span>
+                </div>
+            </div>
+
+            <!-- Current Allocation Status Box -->
+            <div id="alloc_current_status_box" class="mb-3"></div>
+
+            <div class="form-group">
+                <label>Block <span class="text-danger">*</span></label>
+                <select name="block_id" id="alloc_block_id" class="form-control">
+                    <option value="">Select Block</option>
+                    <?php foreach($all_blocks as $blk): ?>
+                        <option value="<?= $blk['id'] ?>"><?= htmlspecialchars($blk['name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <small class="text-danger" id="alloc_block_err"></small>
+            </div>
+
+            <div class="form-group">
+                <label>Floor <span class="text-danger">*</span></label>
+                <select name="floor_id" id="alloc_floor_id" class="form-control" disabled>
+                    <option value="">Select Block first</option>
+                </select>
+                <small class="text-danger" id="alloc_floor_err"></small>
+            </div>
+
+            <div class="form-group">
+                <label>Room <span class="text-danger">*</span></label>
+                <select name="room_id" id="alloc_room_id" class="form-control" disabled>
+                    <option value="">Select Floor first</option>
+                </select>
+                <small class="text-danger" id="alloc_room_err"></small>
+                <small class="text-muted d-block mt-1" id="alloc_room_price_info"></small>
+            </div>
+
+            <div class="form-group">
+                <label>Bed <span class="text-danger">*</span></label>
+                <select name="bed_id" id="alloc_bed_id" class="form-control" disabled>
+                    <option value="">Select Room first</option>
+                </select>
+                <small class="text-danger" id="alloc_bed_err"></small>
+            </div>
+
+            <div class="form-group">
+                <label>Allocation Date <span class="text-danger">*</span></label>
+                <input type="date" name="allocated_date" id="alloc_date" class="form-control" value="<?= date('Y-m-d') ?>">
+                <small class="text-danger" id="alloc_date_err"></small>
+            </div>
+
+            <div class="form-group">
+                <label>Remarks</label>
+                <textarea name="remarks" id="alloc_remarks" class="form-control" rows="2" placeholder="Optional allocation remarks"></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="alloc_submit_btn">Save Allocation</button>
+          </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- View Details Modal -->
 <div class="modal fade" id="viewModal" tabindex="-1" role="dialog">
   <div class="modal-dialog" role="document" style="max-width: 700px;">
@@ -401,11 +823,22 @@ ob_start();
   </div>
 </div>
 
+<style>
+    .custom-swal-popup {
+        padding: 35px 30px !important;
+        border-radius: 12px !important;
+    }
+</style>
 <script>
+// JSON Data for Cascading Dropdowns
+const floorsData = <?= json_encode($all_floors) ?>;
+const roomsData = <?= json_encode($all_rooms) ?>;
+const bedsData = <?= json_encode($all_beds) ?>;
 const feeHistoryData = <?= json_encode($fee_history_by_student) ?>;
 
+let currentAllocBedId = null;
+
 document.addEventListener("DOMContentLoaded", function() {
-    // Initialize DataTables
     if ($.fn.DataTable && !$.fn.DataTable.isDataTable('.datatable')) {
         $('.datatable').DataTable({
             "order": [[ 0, "asc" ]]
@@ -519,6 +952,289 @@ document.addEventListener("DOMContentLoaded", function() {
             $('#view_fee_count_badge').hide();
             $('#view_fee_history_wrapper').html('<div class="p-3 bg-light rounded text-center text-muted"><i class="ti-credit-card mr-1 text-secondary" style="font-size: 22px;"></i><p class="mb-0 mt-2 small font-weight-medium">No fee history or transaction records logged for this student yet.</p></div>');
         }
+    });
+
+    // Verification Modal Handler
+    $(document).on('click', '.verify-btn', function() {
+        var studentId = $(this).data('student_id');
+        var name = $(this).data('name');
+        var email = $(this).data('email');
+        var phone = $(this).data('phone');
+        var profileImage = $(this).data('profile_image');
+
+        var docType = $(this).data('document_type');
+        var docNum = $(this).data('document_number');
+        var docFilePath = $(this).data('doc_file_path');
+        var verification = $(this).data('verification');
+        var docRemarks = $(this).data('doc_remarks');
+
+        $('#verify_student_id').val(studentId);
+        $('#verify_student_name').text(name);
+        $('#verify_student_email').text(email);
+        $('#verify_student_phone').text(phone);
+        $('#verify_doc_type').text(docType ? docType : 'Not specified');
+        $('#verify_doc_number').text(docNum ? docNum : 'N/A');
+        $('#verify_remarks').val(docRemarks ? docRemarks : '');
+
+        if (profileImage && profileImage.trim() !== '') {
+            $('#verify_profile_img_wrapper').html('<img src="../student_profile/' + profileImage + '" style="width: 50px; height: 50px; border-radius: 50%; object-fit: cover;" alt="Profile">');
+        } else {
+            $('#verify_profile_img_wrapper').html('<div style="width: 50px; height: 50px; border-radius: 50%; background: #e0e0e0; color: #666; display: flex; align-items: center; justify-content: center; font-size: 20px;"><i class="ti-user"></i></div>');
+        }
+
+        if (verification === 'verified') {
+            $('#verify_current_status_badge').html('<span class="badge badge-success"><i class="ti-check mr-1"></i>Verified</span>');
+        } else if (verification === 'rejected') {
+            $('#verify_current_status_badge').html('<span class="badge badge-danger"><i class="ti-close mr-1"></i>Rejected</span>');
+        } else {
+            $('#verify_current_status_badge').html('<span class="badge badge-warning"><i class="ti-time mr-1"></i>Pending</span>');
+        }
+
+        if (docFilePath && docFilePath.trim() !== '') {
+            $('#verify_doc_file_wrapper').html('<a href="../student_docs/' + docFilePath + '" target="_blank" class="btn btn-outline-primary btn-sm"><i class="ti-file mr-1"></i> View / Download Document (' + docFilePath + ')</a>');
+        } else {
+            $('#verify_doc_file_wrapper').html('<span class="text-danger font-italic small"><i class="ti-alert mr-1"></i> No document file uploaded by student.</span>');
+        }
+    });
+
+    // Approve Button Click
+    $('#btn_approve_verification').on('click', function() {
+        $('#verify_status_input').val('verified');
+        $('#verifyForm').submit();
+    });
+
+    // Reject Button Click
+    $('#btn_reject_verification').on('click', function() {
+        $('#verify_status_input').val('rejected');
+        $('#verifyForm').submit();
+    });
+
+    // Cascading Dropdown Handlers
+    function populateFloors(blockId, selectedFloorId = null) {
+        let $floorSelect = $('#alloc_floor_id');
+        $floorSelect.html('<option value="">Select Floor</option>');
+        
+        if (!blockId) {
+            $floorSelect.prop('disabled', true);
+            return;
+        }
+
+        const filteredFloors = floorsData.filter(f => f.block_id == blockId);
+        filteredFloors.forEach(f => {
+            const sel = (selectedFloorId && f.id == selectedFloorId) ? 'selected' : '';
+            $floorSelect.append('<option value="' + f.id + '" ' + sel + '>' + f.name + '</option>');
+        });
+
+        $floorSelect.prop('disabled', false);
+    }
+
+    function populateRooms(floorId, selectedRoomId = null) {
+        let $roomSelect = $('#alloc_room_id');
+        $roomSelect.html('<option value="">Select Room</option>');
+        $('#alloc_room_price_info').html('');
+        
+        if (!floorId) {
+            $roomSelect.prop('disabled', true);
+            return;
+        }
+
+        const filteredRooms = roomsData.filter(r => r.floor_id == floorId);
+        filteredRooms.forEach(r => {
+            const sel = (selectedRoomId && r.id == selectedRoomId) ? 'selected' : '';
+            const typeStr = r.room_type ? ' (' + r.room_type.charAt(0).toUpperCase() + r.room_type.slice(1) + ')' : '';
+            const priceVal = r.price ? Number(r.price) : 0;
+            const priceStr = priceVal > 0 ? ' - ₹' + priceVal.toLocaleString('en-IN') : '';
+            $roomSelect.append('<option value="' + r.id + '" data-price="' + priceVal + '" ' + sel + '>Room ' + r.room_number + typeStr + priceStr + '</option>');
+        });
+
+        $roomSelect.prop('disabled', false);
+
+        if (selectedRoomId) {
+            var selectedOpt = $roomSelect.find('option:selected');
+            var price = selectedOpt.data('price');
+            if (price) {
+                $('#alloc_room_price_info').html('<i class="ti-tag mr-1 text-success"></i>Room Price: <strong class="text-success">₹' + Number(price).toLocaleString('en-IN') + '</strong> (recorded in fee history)');
+            }
+        }
+    }
+
+    function populateBeds(roomId, selectedBedId = null) {
+        let $bedSelect = $('#alloc_bed_id');
+        $bedSelect.html('<option value="">Select Bed</option>');
+        
+        if (!roomId) {
+            $bedSelect.prop('disabled', true);
+            return;
+        }
+
+        const filteredBeds = bedsData.filter(b => b.room_id == roomId && (b.status === 'available' || b.id == selectedBedId));
+        if (filteredBeds.length === 0) {
+            $bedSelect.append('<option value="" disabled>No available beds in this room</option>');
+        } else {
+            filteredBeds.forEach(b => {
+                const sel = (selectedBedId && b.id == selectedBedId) ? 'selected' : '';
+                const statusStr = (b.id == selectedBedId) ? ' (Current Allocated)' : '';
+                $bedSelect.append('<option value="' + b.id + '" ' + sel + '>Bed ' + b.bed_number + statusStr + '</option>');
+            });
+        }
+
+        $bedSelect.prop('disabled', false);
+    }
+
+    $('#alloc_block_id').on('change', function() {
+        populateFloors($(this).val());
+        $('#alloc_room_id').html('<option value="">Select Floor first</option>').prop('disabled', true);
+        $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
+        $('#alloc_room_price_info').html('');
+    });
+
+    $('#alloc_floor_id').on('change', function() {
+        populateRooms($(this).val());
+        $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
+    });
+
+    $('#alloc_room_id').on('change', function() {
+        populateBeds($(this).val(), currentAllocBedId);
+        var selectedOpt = $(this).find('option:selected');
+        var price = selectedOpt.data('price');
+        if (price) {
+            $('#alloc_room_price_info').html('<i class="ti-tag mr-1 text-success"></i>Room Price: <strong class="text-success">₹' + Number(price).toLocaleString('en-IN') + '</strong> (will be recorded in fee history)');
+        } else {
+            $('#alloc_room_price_info').html('');
+        }
+    });
+
+    // Open Allocation Modal
+    $(document).on('click', '.allocate-btn', function() {
+        var studentId = $(this).data('student_id');
+        var name = $(this).data('name');
+        var email = $(this).data('email');
+        var phone = $(this).data('phone');
+
+        var allocId = $(this).data('allocation_id');
+        var blockId = $(this).data('block_id');
+        var floorId = $(this).data('floor_id');
+        var roomId = $(this).data('room_id');
+        var bedId = $(this).data('bed_id');
+        var allocDate = $(this).data('allocated_date');
+        var allocRemarks = $(this).data('alloc_remarks');
+
+        var allocBlock = $(this).data('allocated_block_name');
+        var allocFloor = $(this).data('allocated_floor_name');
+        var allocRoom = $(this).data('allocated_room_number');
+        var allocBed = $(this).data('allocated_bed_number');
+
+        currentAllocBedId = bedId ? bedId : null;
+
+        $('#alloc_student_id').val(studentId);
+        $('#alloc_student_name').text(name);
+        $('#alloc_student_email').text(email);
+        $('#alloc_student_phone').text(phone);
+        $('#alloc_remarks').val(allocRemarks ? allocRemarks : '');
+        $('#alloc_date').val(allocDate ? allocDate : new Date().toISOString().split('T')[0]);
+
+        // Clear error text
+        $('#alloc_block_err').text('');
+        $('#alloc_floor_err').text('');
+        $('#alloc_room_err').text('');
+        $('#alloc_bed_err').text('');
+        $('#alloc_date_err').text('');
+
+        if (allocId && allocId != '') {
+            $('#alloc_current_status_box').html(
+                '<div class="alert alert-info py-2 px-3 mb-0 d-flex justify-content-between align-items-center rounded">' +
+                    '<div>' +
+                        '<strong>Currently Allocated:</strong><br>' +
+                        '<small>' + allocBlock + ' (' + allocFloor + ') &bull; Room ' + allocRoom + ' &bull; <strong>Bed ' + allocBed + '</strong>' + (allocDate ? ' &bull; Date: ' + allocDate : '') + '</small>' +
+                    '</div>' +
+                    '<a href="javascript:void(0);" data-url="student.php?deallocate=' + allocId + '" class="btn btn-danger btn-sm deallocate-btn ml-2" title="Vacate Bed"><i class="ti-close mr-1"></i>Vacate</a>' +
+                '</div>'
+            );
+            $('#alloc_submit_btn').text('Update Allocation');
+
+            $('#alloc_block_id').val(blockId);
+            populateFloors(blockId, floorId);
+            populateRooms(floorId, roomId);
+            populateBeds(roomId, bedId);
+        } else {
+            $('#alloc_current_status_box').html(
+                '<div class="alert alert-secondary py-2 px-3 mb-0 rounded text-muted font-italic">' +
+                    '<small><i class="ti-info-alt mr-1"></i> Student currently has no active room/bed allocation.</small>' +
+                '</div>'
+            );
+            $('#alloc_submit_btn').text('Allocate Room');
+
+            $('#alloc_block_id').val('');
+            $('#alloc_floor_id').html('<option value="">Select Block first</option>').prop('disabled', true);
+            $('#alloc_room_id').html('<option value="">Select Floor first</option>').prop('disabled', true);
+            $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
+        }
+    });
+
+    // Validate Allocation Form
+    $('#allocForm').on('submit', function(e) {
+        let valid = true;
+        let blockId = $('#alloc_block_id').val();
+        let floorId = $('#alloc_floor_id').val();
+        let roomId = $('#alloc_room_id').val();
+        let bedId = $('#alloc_bed_id').val();
+        let allocDate = $('#alloc_date').val();
+
+        if (!blockId) { $('#alloc_block_err').text('Block selection is mandatory'); valid = false; } else { $('#alloc_block_err').text(''); }
+        if (!floorId) { $('#alloc_floor_err').text('Floor selection is mandatory'); valid = false; } else { $('#alloc_floor_err').text(''); }
+        if (!roomId) { $('#alloc_room_err').text('Room selection is mandatory'); valid = false; } else { $('#alloc_room_err').text(''); }
+        if (!bedId) { $('#alloc_bed_err').text('Bed selection is mandatory'); valid = false; } else { $('#alloc_bed_err').text(''); }
+        if (!allocDate) { $('#alloc_date_err').text('Allocation Date is mandatory'); valid = false; } else { $('#alloc_date_err').text(''); }
+
+        if (!valid) {
+            e.preventDefault();
+        }
+    });
+
+    // Deallocate Confirmation with SweetAlert
+    $(document).on('click', '.deallocate-btn', function(e) {
+        e.preventDefault();
+        var url = $(this).data('url');
+
+        Swal.fire({
+            title: 'Vacate this Bed?',
+            text: "The student will be deallocated and the bed will become available.",
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#d33',
+            cancelButtonColor: '#3085d6',
+            confirmButtonText: 'Yes, vacate it!',
+            customClass: {
+                popup: 'custom-swal-popup'
+            }
+        }).then((result) => {
+            if (result.isConfirmed) {
+                window.location.href = url;
+            }
+        });
+    });
+
+    // Delete Confirmation with SweetAlert
+    $(document).on('click', '.delete-btn', function(e) {
+        e.preventDefault();
+        var url = $(this).data('url');
+
+        Swal.fire({
+            title: 'Are you sure?',
+            text: "You won't be able to revert this!",
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#d33',
+            cancelButtonColor: '#3085d6',
+            confirmButtonText: 'Yes, delete it!',
+            customClass: {
+                popup: 'custom-swal-popup'
+            }
+        }).then((result) => {
+            if (result.isConfirmed) {
+                window.location.href = url;
+            }
+        });
     });
 });
 </script>
