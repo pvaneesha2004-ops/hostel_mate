@@ -777,7 +777,31 @@ $current_page = basename($_SERVER['PHP_SELF']);
         <i class="fa-solid fa-house"></i>
         <span>Dashboard</span>
       </a>
+
+      <!-- Attendance -->
+      <a href="attendance.php" class="bottom-nav-item <?php echo ($current_page == 'attendance.php') ? 'active' : ''; ?>">
+        <i class="fa-solid fa-clipboard-user"></i>
+        <span>Attendance</span>
+      </a>
+
+      <!-- Food Menu -->
+      <a href="food_menu.php" class="bottom-nav-item <?php echo ($current_page == 'food_menu.php') ? 'active' : ''; ?>">
+        <i class="fa-solid fa-utensils"></i>
+        <span>Food Menu</span>
+      </a>
+
+      <!-- Visitors -->
+      <a href="visitors.php" class="bottom-nav-item <?php echo ($current_page == 'visitors.php') ? 'active' : ''; ?>">
+        <i class="fa-solid fa-users"></i>
+        <span>Visitors</span>
+      </a>
       
+      <!-- Complaints -->
+      <a href="complaints.php" class="bottom-nav-item <?php echo ($current_page == 'complaints.php') ? 'active' : ''; ?>">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span>Complaints</span>
+      </a>
+
       <!-- Profile -->
       <a href="profile.php" class="bottom-nav-item <?php echo ($current_page == 'profile.php') ? 'active' : ''; ?>">
         <i class="fa-regular fa-user"></i>
@@ -790,6 +814,8 @@ $current_page = basename($_SERVER['PHP_SELF']);
   <!-- Scripts -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/4.6.2/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap4.min.js"></script>
   
   <script>
     // Search shortcut key Ctrl/Cmd + K

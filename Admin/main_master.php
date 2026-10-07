@@ -751,18 +751,19 @@ if (!isset($_SESSION['admin_id'])) {
             </a>
           </li>
 
-          <li class="nav-item <?php echo in_array(basename($_SERVER['PHP_SELF']), ['block.php', 'floor.php', 'room.php', 'bed.php']) ? 'active' : ''; ?>">
-            <a class="nav-link" data-toggle="collapse" href="#ui-hostel" aria-expanded="<?php echo in_array(basename($_SERVER['PHP_SELF']), ['block.php', 'floor.php', 'room.php', 'bed.php']) ? 'true' : 'false'; ?>" aria-controls="ui-hostel">
+          <li class="nav-item <?php echo in_array(basename($_SERVER['PHP_SELF']), ['block.php', 'floor.php', 'room.php', 'bed.php', 'hostel_timings.php']) ? 'active' : ''; ?>">
+            <a class="nav-link" data-toggle="collapse" href="#ui-hostel" aria-expanded="<?php echo in_array(basename($_SERVER['PHP_SELF']), ['block.php', 'floor.php', 'room.php', 'bed.php', 'hostel_timings.php']) ? 'true' : 'false'; ?>" aria-controls="ui-hostel">
               <i class="ti-home menu-icon"></i>
               <span class="menu-title">Hostel Setup</span>
               <i class="menu-arrow"></i>
             </a>
-            <div class="collapse <?php echo in_array(basename($_SERVER['PHP_SELF']), ['block.php', 'floor.php', 'room.php', 'bed.php']) ? 'show' : ''; ?>" id="ui-hostel">
+            <div class="collapse <?php echo in_array(basename($_SERVER['PHP_SELF']), ['block.php', 'floor.php', 'room.php', 'bed.php', 'hostel_timings.php']) ? 'show' : ''; ?>" id="ui-hostel">
               <ul class="nav flex-column sub-menu">
                 <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'block.php') ? 'active' : ''; ?>"> <a class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'block.php') ? 'active' : ''; ?>" href="block.php">Block</a></li>
                 <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'floor.php') ? 'active' : ''; ?>"> <a class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'floor.php') ? 'active' : ''; ?>" href="floor.php">Floor</a></li>
                 <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'room.php') ? 'active' : ''; ?>"> <a class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'room.php') ? 'active' : ''; ?>" href="room.php">Room</a></li>
                 <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'bed.php') ? 'active' : ''; ?>"> <a class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'bed.php') ? 'active' : ''; ?>" href="bed.php">Bed</a></li>
+                <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'hostel_timings.php') ? 'active' : ''; ?>"> <a class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'hostel_timings.php') ? 'active' : ''; ?>" href="hostel_timings.php">Hostel Timings/Location</a></li>
               </ul>
             </div>
           </li>
