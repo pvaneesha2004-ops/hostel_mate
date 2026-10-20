@@ -738,6 +738,36 @@ if (!isset($_SESSION['admin_id'])) {
               <span class="menu-title">Students</span>
             </a>
           </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'attendance.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="attendance.php">
+              <i class="fa-solid fa-clipboard-user menu-icon"></i>
+              <span class="menu-title">Attendance</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'complaints.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="complaints.php">
+              <i class="fa-solid fa-triangle-exclamation menu-icon"></i>
+              <span class="menu-title">Complaints</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'visitors.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="visitors.php">
+              <i class="fa-solid fa-users menu-icon"></i>
+              <span class="menu-title">Visitors</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'fee_history.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="fee_history.php">
+              <i class="fa-solid fa-receipt menu-icon"></i>
+              <span class="menu-title">Fee History</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'reports.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="reports.php">
+              <i class="fa-solid fa-chart-column menu-icon"></i>
+              <span class="menu-title">Reports & Analytics</span>
+            </a>
+          </li>
           <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'food_menu.php') ? 'active' : ''; ?>">
             <a class="nav-link" href="food_menu.php">
               <i class="fa-solid fa-utensils menu-icon"></i>

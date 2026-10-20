@@ -7,9 +7,70 @@ if (!isset($_SESSION['student_id'])) {
     exit();
 }
 
-require_once '../db.php';
+require_once __DIR__ . '/../db.php';
 
 $student_id = intval($_SESSION['student_id']);
+
+// -------------------------------------------------------------
+// DUMMY PAYMENT PROCESSING & DATA INSERT
+// -------------------------------------------------------------
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['action']) && $_POST['action'] === 'process_fee_payment') {
+    $pay_amount = floatval($_POST['price'] ?? 2500);
+    if ($pay_amount <= 0) $pay_amount = 2500;
+
+    // Find current latest payment date
+    $cur_stmt = $conn->prepare("SELECT date FROM student_fee_history WHERE student_id = ? ORDER BY date DESC, id DESC LIMIT 1");
+    $cur_stmt->bind_param("i", $student_id);
+    $cur_stmt->execute();
+    $cur_res = $cur_stmt->get_result()->fetch_assoc();
+
+    $today_str = date('Y-m-d');
+    if ($cur_res && !empty($cur_res['date'])) {
+        $cur_end = date('Y-m-d', strtotime($cur_res['date'] . ' + 31 days'));
+        if (strtotime($cur_end) > strtotime($today_str)) {
+            $new_fee_date = $cur_end;
+        } else {
+            $new_fee_date = $today_str;
+        }
+    } else {
+        $new_fee_date = $today_str;
+    }
+
+    $insert_fee = $conn->prepare("
+        INSERT INTO student_fee_history (student_id, price, date, created_at, updated_at) 
+        VALUES (?, ?, ?, NOW(), NOW())
+    ");
+    $insert_fee->bind_param("ids", $student_id, $pay_amount, $new_fee_date);
+    $exec_ok = $insert_fee->execute();
+    $insert_id = $conn->insert_id;
+
+    $is_ajax = (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') || isset($_POST['ajax']);
+    if ($is_ajax) {
+        header('Content-Type: application/json');
+        if ($exec_ok) {
+            echo json_encode([
+                'status' => 'success',
+                'message' => 'Payment of ₹ ' . number_format($pay_amount, 2) . ' completed successfully! Your hostel fee is renewed for 31 days.',
+                'fee_id' => $insert_id,
+                'receipt_no' => 'REC-' . date('Y', strtotime($new_fee_date)) . '-' . str_pad($insert_id, 4, '0', STR_PAD_LEFT),
+                'new_date' => date('d M, Y', strtotime($new_fee_date)),
+                'valid_until' => date('d M Y', strtotime($new_fee_date . ' + 31 days'))
+            ]);
+        } else {
+            echo json_encode([
+                'status' => 'error',
+                'message' => 'Failed to save fee record: ' . $conn->error
+            ]);
+        }
+        exit();
+    } else {
+        if ($exec_ok) {
+            $_SESSION['fee_payment_success'] = "Payment of ₹ " . number_format($pay_amount, 2) . " completed successfully! 31 Days added to your stay.";
+        }
+        header("Location: home.php");
+        exit();
+    }
+}
 
 // Auto-create notices table if not existing
 $create_table_sql = "CREATE TABLE IF NOT EXISTS `notices` (
@@ -87,6 +148,95 @@ $vis_res = $conn->query("SELECT
     FROM `visitors` WHERE `student_id` = {$student_id}");
 $vis_data = $vis_res ? $vis_res->fetch_assoc() : ['total' => 0, 'approved_cnt' => 0, 'pending_cnt' => 0];
 $approved_visitors = intval($vis_data['approved_cnt']);
+
+// -------------------------------------------------------------
+// 4. STUDENT FEE HISTORY & 31-DAY CYCLE LOGIC
+// -------------------------------------------------------------
+// Query latest fee payment from `student_fee_history`
+$last_fee_stmt = $conn->prepare("
+    SELECT id, student_id, price, date, created_at 
+    FROM student_fee_history 
+    WHERE student_id = ? 
+    ORDER BY date DESC, id DESC 
+    LIMIT 1
+");
+$last_fee_stmt->bind_param("i", $student_id);
+$last_fee_stmt->execute();
+$last_fee = $last_fee_stmt->get_result()->fetch_assoc();
+
+// Fetch student active room allocation for details & price
+$alloc_stmt = $conn->prepare("
+    SELECT 
+        ra.id as allocation_id,
+        ra.room_id,
+        ra.bed_id,
+        b.name as block_name,
+        fl.name as floor_name,
+        r.room_number,
+        r.price as room_price,
+        bed.bed_number
+    FROM room_allocations ra
+    LEFT JOIN beds bed ON ra.bed_id = bed.id
+    LEFT JOIN rooms r ON ra.room_id = r.id
+    LEFT JOIN floors fl ON r.floor_id = fl.id
+    LEFT JOIN blocks b ON fl.block_id = b.id
+    WHERE ra.student_id = ? AND ra.status = 'active'
+    LIMIT 1
+");
+$alloc_stmt->bind_param("i", $student_id);
+$alloc_stmt->execute();
+$active_alloc = $alloc_stmt->get_result()->fetch_assoc();
+
+// Determine renewal amount
+$renewal_fee_amount = 2500.00;
+if (!empty($last_fee['price']) && floatval($last_fee['price']) > 0) {
+    $renewal_fee_amount = floatval($last_fee['price']);
+} elseif (!empty($active_alloc['room_price']) && floatval($active_alloc['room_price']) > 0) {
+    $renewal_fee_amount = floatval($active_alloc['room_price']);
+}
+
+// 31-day cycle calculation
+$has_fee_payment = !empty($last_fee) && !empty($last_fee['date']);
+$days_balance = 0;
+$days_remaining = 0;
+$days_elapsed = 0;
+$cycle_start_date = '';
+$cycle_end_date = '';
+$is_due_soon = true; // Last 2 days or expired => RED; otherwise GREEN
+
+if ($has_fee_payment) {
+    $cycle_start_date = $last_fee['date'];
+    $cycle_end_date = date('Y-m-d', strtotime($cycle_start_date . ' + 31 days'));
+
+    $today_ts = strtotime(date('Y-m-d'));
+    $end_ts   = strtotime($cycle_end_date);
+
+    $seconds_remaining = $end_ts - $today_ts;
+    $days_balance = (int)floor($seconds_remaining / 86400);
+    $days_remaining = max(0, $days_balance);
+    $days_elapsed = 31 - $days_balance;
+    if ($days_elapsed < 0) $days_elapsed = 0;
+    if ($days_elapsed > 31) $days_elapsed = 31;
+
+    // RED in last 2 days (<= 2) or expired; GREEN other times (> 2)
+    $is_due_soon = ($days_balance <= 2);
+
+    // New cycle start date for payment
+    if ($end_ts > $today_ts) {
+        $next_cycle_start = $cycle_end_date;
+    } else {
+        $next_cycle_start = date('Y-m-d');
+    }
+} else {
+    $is_due_soon = true;
+    $days_balance = 0;
+    $days_remaining = 0;
+    $days_elapsed = 31;
+    $next_cycle_start = date('Y-m-d');
+    $cycle_start_date = date('Y-m-d');
+    $cycle_end_date = date('Y-m-d');
+}
+$next_cycle_end = date('Y-m-d', strtotime($next_cycle_start . ' + 31 days'));
 
 ob_start();
 ?>
@@ -423,6 +573,202 @@ ob_start();
     box-shadow: 0 8px 20px rgba(99, 102, 241, 0.12);
     border-color: rgba(99, 102, 241, 0.3);
   }
+
+  /* =========================================================
+     FULL-WIDTH HOSTEL FEE STATUS CARD (GREEN / RED DYNAMIC)
+     ========================================================= */
+  .fee-status-card {
+    border-radius: 20px;
+    padding: 1.85rem 2.25rem;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    color: #ffffff;
+    margin-bottom: 0.5rem;
+  }
+
+  /* GREEN STATE: More than 2 days balance remaining */
+  .fee-card-green {
+    background: linear-gradient(135deg, #022c22 0%, #065f46 50%, #059669 100%);
+    box-shadow: 0 12px 32px rgba(5, 150, 105, 0.25);
+    border: 1px solid rgba(167, 243, 208, 0.35);
+  }
+
+  .fee-card-green::after {
+    content: "\f53d";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    position: absolute;
+    right: 25px;
+    bottom: -35px;
+    font-size: 180px;
+    color: rgba(255, 255, 255, 0.06);
+    pointer-events: none;
+    line-height: 1;
+  }
+
+  /* RED STATE: Last 2 days remaining, today, or expired */
+  .fee-card-red {
+    background: linear-gradient(135deg, #450a0a 0%, #991b1b 50%, #dc2626 100%);
+    box-shadow: 0 12px 32px rgba(220, 38, 38, 0.35);
+    border: 1.5px solid rgba(254, 202, 202, 0.5);
+    animation: urgentPulseGlow 3s infinite alternate;
+  }
+
+  .fee-card-red::after {
+    content: "\f071";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    position: absolute;
+    right: 25px;
+    bottom: -35px;
+    font-size: 180px;
+    color: rgba(255, 255, 255, 0.08);
+    pointer-events: none;
+    line-height: 1;
+  }
+
+  @keyframes urgentPulseGlow {
+    0% {
+      box-shadow: 0 12px 32px rgba(220, 38, 38, 0.3);
+    }
+    100% {
+      box-shadow: 0 14px 40px rgba(239, 68, 68, 0.55);
+    }
+  }
+
+  .fee-tag-pill {
+    font-size: 0.76rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 0.35rem 0.9rem;
+    border-radius: 50px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .fee-tag-green {
+    background: rgba(255, 255, 255, 0.2);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    backdrop-filter: blur(4px);
+  }
+
+  .fee-tag-red {
+    background: #ffffff;
+    color: #dc2626;
+    border: 1px solid #ffffff;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.15);
+  }
+
+  .btn-pay-renewal {
+    background: #ffffff !important;
+    color: #b91c1c !important;
+    font-weight: 800 !important;
+    font-size: 0.92rem !important;
+    padding: 0.68rem 1.4rem !important;
+    border-radius: 12px !important;
+    border: none !important;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18) !important;
+    transition: all 0.25s ease !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+  }
+
+  .btn-pay-renewal:hover {
+    background: #fff1f2 !important;
+    color: #991b1b !important;
+    transform: translateY(-2px) scale(1.02) !important;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25) !important;
+  }
+
+  .fee-cycle-progress-track {
+    height: 7px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-top: 1.25rem;
+  }
+
+  .fee-cycle-progress-fill-green {
+    height: 100%;
+    background: #ffffff;
+    border-radius: 10px;
+  }
+
+  .fee-cycle-progress-fill-red {
+    height: 100%;
+    background: #fef08a;
+    border-radius: 10px;
+  }
+
+  @media (min-width: 992px) {
+    .border-right-lg {
+      border-right: 1px solid rgba(255, 255, 255, 0.16) !important;
+    }
+  }
+
+  /* =========================================================
+     PAYMENT GATEWAY MODAL SCROLL & PINNED FOOTER FIX
+     ========================================================= */
+  #dummyPaymentModal {
+    z-index: 1060 !important;
+  }
+
+  #dummyPaymentModal .modal-dialog {
+    max-height: calc(100vh - 40px);
+    margin: 1.25rem auto;
+  }
+
+  #dummyPaymentModal .modal-content {
+    max-height: calc(100vh - 40px);
+    display: flex;
+    flex-direction: column;
+    border-radius: 20px;
+    overflow: hidden;
+  }
+
+  #dummyPaymentModal .modal-header {
+    flex-shrink: 0;
+  }
+
+  #dummyPaymentModal .modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto !important;
+    max-height: calc(100vh - 220px);
+    -webkit-overflow-scrolling: touch;
+    padding: 1.5rem;
+  }
+
+  #dummyPaymentModal .modal-body::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  #dummyPaymentModal .modal-body::-webkit-scrollbar-track {
+    background: #f1f5f9;
+  }
+
+  #dummyPaymentModal .modal-body::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 10px;
+  }
+
+  #dummyPaymentModal .modal-body::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+
+  #dummyPaymentModal .modal-footer {
+    flex-shrink: 0;
+    position: sticky;
+    bottom: 0;
+    background: #f8fafc !important;
+    border-top: 1.5px solid #e2e8f0;
+    z-index: 10;
+    box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.04);
+  }
 </style>
 
 <!-- Welcome Hero Header -->
@@ -439,6 +785,127 @@ ob_start();
       <p class="text-white-50 mb-0" style="font-size: 0.95rem; max-width: 620px;">
         Track your attendance trends, registered maintenance complaints, guest entry passes, and official notices below.
       </p>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================================= -->
+<!-- FULL-WIDTH HOSTEL FEE STATUS CARD (DYNAMIC GREEN / RED)   -->
+<!-- ========================================================= -->
+<div class="row mb-4">
+  <div class="col-12">
+    <div class="fee-status-card <?= $is_due_soon ? 'fee-card-red' : 'fee-card-green' ?>">
+      
+      <!-- Top Header Row -->
+      <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(255,255,255,0.2) !important;">
+        <div class="d-flex align-items-center flex-wrap">
+          <?php if ($is_due_soon): ?>
+            <span class="fee-tag-pill fee-tag-red mr-2 mb-1">
+              <i class="fa-solid fa-triangle-exclamation"></i> ACTION REQUIRED: FEE DUE IN <?= $days_remaining ?> <?= ($days_remaining == 1) ? 'DAY' : 'DAYS' ?>
+            </span>
+          <?php else: ?>
+            <span class="fee-tag-pill fee-tag-green mr-2 mb-1">
+              <i class="fa-solid fa-circle-check text-warning"></i> FEE STATUS: ACTIVE (<?= $days_remaining ?> DAYS BALANCE)
+            </span>
+          <?php endif; ?>
+          <span class="text-white-50 font-weight-600 mb-1" style="font-size: 0.84rem;">
+            <i class="fa-regular fa-calendar-check mr-1 text-white"></i> 31-Day Hostel Fee Cycle
+          </span>
+        </div>
+
+        <div class="text-white-50 font-weight-600 mb-1" style="font-size: 0.84rem;">
+          <i class="fa-solid fa-hotel mr-1 text-white"></i>
+          <?= htmlspecialchars($active_alloc['block_name'] ?? 'Hostel') ?> — Room <?= htmlspecialchars($active_alloc['room_number'] ?? 'N/A') ?><?= !empty($active_alloc['bed_number']) ? ' (Bed ' . $active_alloc['bed_number'] . ')' : '' ?>
+        </div>
+      </div>
+
+      <!-- Core Metrics Row -->
+      <div class="row align-items-center">
+        
+        <!-- Column 1: Days Balance (How many days balance) -->
+        <div class="col-lg-3 col-md-6 col-sm-6 mb-3 mb-lg-0 border-right-lg">
+          <small class="text-white-50 text-uppercase font-weight-bold d-block" style="font-size: 0.72rem; letter-spacing: 0.8px;">
+            Days Balance Remaining
+          </small>
+          <div class="font-weight-900 text-white my-1" style="font-size: 2.3rem; line-height: 1.1;">
+            <?= $days_remaining ?> <span style="font-size: 1.05rem; font-weight: 600;" class="text-white-50">/ 31 Days</span>
+          </div>
+          <small class="d-block font-weight-600" style="font-size: 0.8rem; color: <?= $is_due_soon ? '#fef08a' : '#d1fae5' ?>;">
+            <?php if ($days_remaining == 0): ?>
+              <i class="fa-solid fa-circle-exclamation mr-1"></i> Fee cycle expired! Renew now.
+            <?php elseif ($is_due_soon): ?>
+              <i class="fa-solid fa-clock mr-1"></i> Urgent: Only <?= $days_remaining ?> <?= ($days_remaining == 1) ? 'day' : 'days' ?> left!
+            <?php else: ?>
+              <i class="fa-solid fa-shield-check mr-1"></i> Covered until <?= date('d M, Y', strtotime($cycle_end_date)) ?>
+            <?php endif; ?>
+          </small>
+        </div>
+
+        <!-- Column 2: Last Payment Data (Date field & amount) -->
+        <div class="col-lg-3 col-md-6 col-sm-6 mb-3 mb-lg-0 border-right-lg">
+          <small class="text-white-50 text-uppercase font-weight-bold d-block" style="font-size: 0.72rem; letter-spacing: 0.8px;">
+            Last Payment Data
+          </small>
+          <div class="font-weight-800 text-white my-1" style="font-size: 1.65rem; line-height: 1.2;">
+            ₹ <?= number_format($last_fee['price'] ?? $renewal_fee_amount, 2) ?>
+          </div>
+          <small class="text-white d-block font-weight-600" style="font-size: 0.82rem;">
+            <i class="fa-regular fa-calendar mr-1 text-white-50"></i> Date: <strong><?= $has_fee_payment ? date('d M, Y', strtotime($last_fee['date'])) : 'No prior payment' ?></strong>
+          </small>
+          <small class="text-white-50 font-weight-500" style="font-size: 0.75rem;">
+            Ref: <span class="text-white font-weight-bold">REC-<?= date('Y', strtotime($last_fee['date'] ?? 'now')) ?>-<?= str_pad($last_fee['id'] ?? 1, 4, '0', STR_PAD_LEFT) ?></span>
+          </small>
+        </div>
+
+        <!-- Column 3: 31-Day Cycle Range -->
+        <div class="col-lg-3 col-md-6 col-sm-6 mb-3 mb-lg-0">
+          <small class="text-white-50 text-uppercase font-weight-bold d-block" style="font-size: 0.72rem; letter-spacing: 0.8px;">
+            Current 31-Day Period
+          </small>
+          <div class="font-weight-700 text-white my-1" style="font-size: 1.15rem; line-height: 1.3;">
+            <?= $has_fee_payment ? date('d M', strtotime($cycle_start_date)) . ' — ' . date('d M Y', strtotime($cycle_end_date)) : 'Not Active' ?>
+          </div>
+          <small class="text-white-50 d-block font-weight-500" style="font-size: 0.78rem;">
+            <i class="fa-solid fa-hourglass-half mr-1 text-white"></i> <?= $days_elapsed ?> Days Used of 31 Days
+          </small>
+          <small class="text-white-50 d-block font-weight-500" style="font-size: 0.75rem;">
+            Status: <span class="badge badge-light px-2 py-0 font-weight-bold" style="font-size: 0.68rem; color: #065f46;">PAID & RECORDED</span>
+          </small>
+        </div>
+
+        <!-- Column 4: Payment Button (Show on last 2 days or expired) -->
+        <div class="col-lg-3 col-md-6 col-sm-6 text-lg-right mt-2 mt-lg-0">
+          <?php if ($is_due_soon): ?>
+            <button type="button" class="btn btn-pay-renewal" data-toggle="modal" data-target="#dummyPaymentModal">
+              <i class="fa-solid fa-credit-card"></i> Pay Next Month Fee
+            </button>
+            <small class="text-white-50 d-block mt-2 font-weight-600 text-lg-right">
+              <i class="fa-solid fa-bolt text-warning mr-1"></i> Renews for next 31 days (₹ <?= number_format($renewal_fee_amount, 2) ?>)
+            </small>
+          <?php else: ?>
+            <div class="d-inline-flex flex-column align-items-lg-end">
+              <span class="badge badge-pill px-3 py-2 text-white font-weight-bold" style="background: rgba(255,255,255,0.18); font-size: 0.82rem; border: 1px solid rgba(255,255,255,0.3);">
+                <i class="fa-solid fa-shield-check text-warning mr-1"></i> Plan Fully Covered
+              </span>
+              <small class="text-white-50 d-block mt-2 font-weight-600 text-lg-right">
+                Next renewal unlocks in last 2 days
+              </small>
+            </div>
+          <?php endif; ?>
+        </div>
+
+      </div>
+
+      <!-- Bottom Cycle Progress Track -->
+      <div class="fee-cycle-progress-track">
+        <div class="<?= $is_due_soon ? 'fee-cycle-progress-fill-red' : 'fee-cycle-progress-fill-green' ?>" 
+             style="width: <?= round(($days_elapsed / 31) * 100) ?>%;"></div>
+      </div>
+      <div class="d-flex justify-content-between text-white-50 font-weight-600 mt-1" style="font-size: 0.72rem;">
+        <span>Day <?= $days_elapsed ?> of 31 Days Cycle</span>
+        <span><?= $days_remaining ?> Days Balance Left</span>
+      </div>
+
     </div>
   </div>
 </div>
@@ -799,9 +1266,326 @@ ob_start();
   </div>
 </div>
 
+<!-- ========================================================= -->
+<!-- DUMMY PAYMENT GATEWAY MODAL (HOSTEL MATE PAY)             -->
+<!-- ========================================================= -->
+<div class="modal fade" id="dummyPaymentModal" tabindex="-1" role="dialog" aria-labelledby="dummyPaymentModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg" role="document">
+    <div class="modal-content border-0 shadow-lg" style="border-radius: 20px; overflow: hidden;">
+      
+      <!-- Modal Header with Secure Gateway Badge -->
+      <div class="modal-header py-3 px-4 text-white" style="background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);">
+        <div>
+          <h5 class="modal-title font-weight-800 mb-0 d-flex align-items-center" id="dummyPaymentModalLabel">
+            <i class="fa-solid fa-lock mr-2 text-warning"></i> Secure Hostel Fee Payment
+          </h5>
+          <small class="text-white-50 font-weight-500">Hostel Mate Express Gateway • 256-Bit SSL Encrypted</small>
+        </div>
+        <button type="button" class="close text-white opacity-75" data-dismiss="modal" aria-label="Close" style="text-shadow: none;">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+
+      <div class="modal-body p-4" style="background: #ffffff;">
+        
+        <!-- Order Breakdown Card -->
+        <div class="p-3 mb-4 rounded-14" style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 14px;">
+          <div class="row align-items-center">
+            <div class="col-md-7 mb-2 mb-md-0">
+              <span class="badge badge-primary px-2 py-1 font-weight-bold mb-1" style="font-size: 0.72rem; text-transform: uppercase;">Next 31 Days Renewal</span>
+              <h6 class="font-weight-800 text-dark mb-1">Monthly Hostel Stay & Room Accommodation</h6>
+              <small class="text-muted d-block">
+                Resident: <strong><?= htmlspecialchars($_SESSION['student_name']) ?></strong> (ID #<?= $student_id ?>)
+              </small>
+              <small class="text-muted d-block">
+                Allotment: <strong><?= htmlspecialchars($active_alloc['block_name'] ?? 'Block') ?> - Rm <?= htmlspecialchars($active_alloc['room_number'] ?? 'N/A') ?><?= !empty($active_alloc['bed_number']) ? ' (Bed ' . $active_alloc['bed_number'] . ')' : '' ?></strong>
+              </small>
+              <small class="text-primary font-weight-bold d-block mt-1">
+                <i class="fa-regular fa-calendar-check mr-1"></i> Coverage: <?= date('d M Y', strtotime($next_cycle_start)) ?> — <?= date('d M Y', strtotime($next_cycle_end)) ?> (31 Days)
+              </small>
+            </div>
+            <div class="col-md-5 text-md-right border-left-md">
+              <small class="text-muted text-uppercase font-weight-bold d-block" style="font-size: 0.7rem;">Total Amount Due</small>
+              <div class="font-weight-900 text-success" style="font-size: 2rem; line-height: 1.1;">
+                ₹ <?= number_format($renewal_fee_amount, 2) ?>
+              </div>
+              <small class="text-muted">Includes all amenities & mess facilities</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Payment Method Tabs -->
+        <h6 class="font-weight-800 text-dark mb-3">
+          <i class="fa-solid fa-wallet text-primary mr-1"></i> Select Payment Method
+        </h6>
+
+        <ul class="nav nav-pills nav-fill mb-3" id="paymentTabs" role="tablist" style="background: #f1f5f9; padding: 4px; border-radius: 12px;">
+          <li class="nav-item">
+            <a class="nav-link active font-weight-bold py-2 rounded-10" id="tab-upi-link" data-toggle="pill" href="#tab-upi" role="tab" style="font-size: 0.85rem;">
+              <i class="fa-solid fa-qrcode mr-1"></i> UPI / QR Code
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link font-weight-bold py-2 rounded-10" id="tab-card-link" data-toggle="pill" href="#tab-card" role="tab" style="font-size: 0.85rem;">
+              <i class="fa-regular fa-credit-card mr-1"></i> Debit / Credit Card
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link font-weight-bold py-2 rounded-10" id="tab-net-link" data-toggle="pill" href="#tab-net" role="tab" style="font-size: 0.85rem;">
+              <i class="fa-solid fa-building-columns mr-1"></i> Net Banking
+            </a>
+          </li>
+        </ul>
+
+        <!-- Tab Content -->
+        <div class="tab-content pt-2" id="paymentTabsContent">
+          
+          <!-- UPI Tab -->
+          <div class="tab-pane fade show active" id="tab-upi" role="tabpanel">
+            <div class="row align-items-center">
+              <div class="col-md-5 text-center mb-3 mb-md-0">
+                <div class="p-3 d-inline-block rounded-16 bg-white border shadow-sm" style="border-radius: 16px;">
+                  <!-- High-Res Simulated QR Code -->
+                  <svg width="150" height="150" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <rect width="100" height="100" fill="#ffffff"/>
+                    <rect x="5" y="5" width="28" height="28" fill="#1e293b"/>
+                    <rect x="9" y="9" width="20" height="20" fill="#ffffff"/>
+                    <rect x="13" y="13" width="12" height="12" fill="#1e293b"/>
+                    
+                    <rect x="67" y="5" width="28" height="28" fill="#1e293b"/>
+                    <rect x="71" y="9" width="20" height="20" fill="#ffffff"/>
+                    <rect x="75" y="13" width="12" height="12" fill="#1e293b"/>
+                    
+                    <rect x="5" y="67" width="28" height="28" fill="#1e293b"/>
+                    <rect x="9" y="71" width="20" height="20" fill="#ffffff"/>
+                    <rect x="13" y="75" width="12" height="12" fill="#1e293b"/>
+                    
+                    <rect x="38" y="8" width="8" height="8" fill="#2563eb"/>
+                    <rect x="50" y="8" width="8" height="8" fill="#1e293b"/>
+                    <rect x="38" y="22" width="12" height="8" fill="#1e293b"/>
+                    <rect x="52" y="22" width="8" height="12" fill="#2563eb"/>
+                    <rect x="8" y="38" width="12" height="8" fill="#1e293b"/>
+                    <rect x="24" y="38" width="8" height="12" fill="#2563eb"/>
+                    <rect x="38" y="38" width="8" height="8" fill="#1e293b"/>
+                    <rect x="50" y="38" width="12" height="12" fill="#1e293b"/>
+                    <rect x="68" y="38" width="10" height="8" fill="#2563eb"/>
+                    <rect x="82" y="38" width="10" height="12" fill="#1e293b"/>
+                    <rect x="8" y="52" width="8" height="10" fill="#2563eb"/>
+                    <rect x="22" y="52" width="10" height="8" fill="#1e293b"/>
+                    <rect x="38" y="54" width="8" height="8" fill="#2563eb"/>
+                    <rect x="70" y="54" width="12" height="8" fill="#1e293b"/>
+                    <rect x="86" y="54" width="6" height="8" fill="#2563eb"/>
+                    <rect x="38" y="68" width="12" height="8" fill="#1e293b"/>
+                    <rect x="54" y="68" width="8" height="12" fill="#2563eb"/>
+                    <rect x="68" y="68" width="12" height="8" fill="#1e293b"/>
+                    <rect x="84" y="68" width="8" height="12" fill="#1e293b"/>
+                    <rect x="38" y="84" width="8" height="8" fill="#2563eb"/>
+                    <rect x="50" y="84" width="12" height="8" fill="#1e293b"/>
+                    <rect x="68" y="84" width="8" height="8" fill="#1e293b"/>
+                    <rect x="80" y="84" width="12" height="8" fill="#2563eb"/>
+                  </svg>
+                  <small class="d-block font-weight-bold text-dark mt-1" style="font-size: 0.72rem;">Scan with Any UPI App</small>
+                </div>
+              </div>
+              <div class="col-md-7">
+                <div class="form-group mb-2">
+                  <label class="font-weight-700 text-dark mb-1" style="font-size: 0.82rem;">UPI ID / VPA</label>
+                  <div class="input-group">
+                    <input type="text" class="form-control" id="dummyUpiInput" value="<?= htmlspecialchars($_SESSION['student_email'] ?? 'student') ?>@okaxis" placeholder="e.g. mobile@upi">
+                    <div class="input-group-append">
+                      <span class="input-group-text bg-light text-success font-weight-bold" style="font-size: 0.75rem;">Verified ✓</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="d-flex align-items-center gap-2 mt-2">
+                  <span class="badge badge-light border text-muted px-2 py-1 mr-1 font-weight-bold"><i class="fa-brands fa-google-pay text-primary mr-1"></i> Google Pay</span>
+                  <span class="badge badge-light border text-muted px-2 py-1 mr-1 font-weight-bold"><i class="fa-solid fa-mobile-screen text-purple mr-1"></i> PhonePe</span>
+                  <span class="badge badge-light border text-muted px-2 py-1 mr-1 font-weight-bold"><i class="fa-solid fa-wallet text-info mr-1"></i> Paytm</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card Tab -->
+          <div class="tab-pane fade" id="tab-card" role="tabpanel">
+            <div class="row">
+              <div class="col-12 mb-2">
+                <label class="font-weight-700 text-dark mb-1" style="font-size: 0.82rem;">Card Number</label>
+                <div class="input-group">
+                  <input type="text" class="form-control font-weight-bold" value="4532 •••• •••• 8892" readonly>
+                  <div class="input-group-append">
+                    <span class="input-group-text bg-white"><i class="fa-brands fa-cc-visa text-primary fa-lg"></i></span>
+                  </div>
+                </div>
+              </div>
+              <div class="col-6 mb-2">
+                <label class="font-weight-700 text-dark mb-1" style="font-size: 0.82rem;">Expiry Date</label>
+                <input type="text" class="form-control" value="08 / 29" readonly>
+              </div>
+              <div class="col-6 mb-2">
+                <label class="font-weight-700 text-dark mb-1" style="font-size: 0.82rem;">CVV</label>
+                <input type="password" class="form-control" value="888" readonly>
+              </div>
+              <div class="col-12">
+                <label class="font-weight-700 text-dark mb-1" style="font-size: 0.82rem;">Cardholder Name</label>
+                <input type="text" class="form-control font-weight-bold" value="<?= htmlspecialchars($_SESSION['student_name'] ?? 'Student Resident') ?>" readonly>
+              </div>
+            </div>
+          </div>
+
+          <!-- Net Banking Tab -->
+          <div class="tab-pane fade" id="tab-net" role="tabpanel">
+            <label class="font-weight-700 text-dark mb-2" style="font-size: 0.82rem;">Select Primary Bank</label>
+            <div class="row text-center">
+              <div class="col-3 mb-2">
+                <div class="p-2 border rounded-10 bg-white shadow-sm font-weight-bold text-primary cursor-pointer border-primary" style="border-radius: 10px;">
+                  <i class="fa-solid fa-building-columns d-block mb-1"></i>
+                  <small style="font-size: 0.72rem;">HDFC Bank</small>
+                </div>
+              </div>
+              <div class="col-3 mb-2">
+                <div class="p-2 border rounded-10 bg-light text-muted" style="border-radius: 10px;">
+                  <i class="fa-solid fa-building-columns d-block mb-1"></i>
+                  <small style="font-size: 0.72rem;">SBI Bank</small>
+                </div>
+              </div>
+              <div class="col-3 mb-2">
+                <div class="p-2 border rounded-10 bg-light text-muted" style="border-radius: 10px;">
+                  <i class="fa-solid fa-building-columns d-block mb-1"></i>
+                  <small style="font-size: 0.72rem;">ICICI Bank</small>
+                </div>
+              </div>
+              <div class="col-3 mb-2">
+                <div class="p-2 border rounded-10 bg-light text-muted" style="border-radius: 10px;">
+                  <i class="fa-solid fa-building-columns d-block mb-1"></i>
+                  <small style="font-size: 0.72rem;">Axis Bank</small>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Simulated Processing Banner (Initially hidden) -->
+        <div id="dummyPaymentProgress" class="d-none text-center py-4 my-2">
+          <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status">
+            <span class="sr-only">Processing...</span>
+          </div>
+          <h6 class="font-weight-bold text-dark mb-1" id="dummyPaymentStatusText">Connecting with Payment Gateway...</h6>
+          <small class="text-muted">Please do not refresh or close this browser window.</small>
+        </div>
+
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="modal-footer bg-light py-3 px-4 d-flex justify-content-between align-items-center">
+        <button type="button" class="btn btn-outline-secondary font-weight-bold rounded-10 px-3 py-2" data-dismiss="modal" id="btnCancelDummyPayment">
+          Cancel
+        </button>
+        <button type="button" class="btn btn-success font-weight-bold rounded-10 px-4 py-2" id="btnSubmitDummyPayment" style="background: linear-gradient(135deg, #059669 0%, #10b981 100%); border: none;">
+          <i class="fa-solid fa-shield-halved mr-1"></i> Pay ₹ <?= number_format($renewal_fee_amount, 2) ?> Securely
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- SweetAlert2 Library for Rich Animated Feedback -->
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
 <script>
 let currentSlideIndex = 0;
 let noticeAutoScrollInterval = null;
+
+// Dummy Payment Gateway Simulation & Table Insertion
+document.getElementById('btnSubmitDummyPayment')?.addEventListener('click', function() {
+    const btn = this;
+    const cancelBtn = document.getElementById('btnCancelDummyPayment');
+    const tabsContent = document.getElementById('paymentTabsContent');
+    const paymentTabs = document.getElementById('paymentTabs');
+    const progressArea = document.getElementById('dummyPaymentProgress');
+    const statusText = document.getElementById('dummyPaymentStatusText');
+
+    // UI state: disable and show spinner
+    btn.disabled = true;
+    if (cancelBtn) cancelBtn.disabled = true;
+    if (tabsContent) tabsContent.classList.add('d-none');
+    if (paymentTabs) paymentTabs.classList.add('d-none');
+    if (progressArea) progressArea.classList.remove('d-none');
+
+    // Step 1: Connecting (400ms)
+    setTimeout(() => {
+        if (statusText) statusText.innerText = 'Authorizing ₹ <?= number_format($renewal_fee_amount, 2) ?> via Secure Banking...';
+    }, 400);
+
+    // Step 2: Bank processing (900ms)
+    setTimeout(() => {
+        if (statusText) statusText.innerText = 'Payment Authorized! Recording 31-Day Hostel Extension...';
+    }, 900);
+
+    // Step 3: AJAX post to insert data into student_fee_history (1300ms)
+    setTimeout(() => {
+        $.ajax({
+            url: 'home.php',
+            type: 'POST',
+            dataType: 'json',
+            data: {
+                action: 'process_fee_payment',
+                price: <?= $renewal_fee_amount ?>,
+                ajax: 1
+            },
+            success: function(resp) {
+                $('#dummyPaymentModal').modal('hide');
+                if (resp && resp.status === 'success') {
+                    if (window.Swal) {
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Payment Successful!',
+                            html: '<p class="text-muted mb-2">' + resp.message + '</p>' +
+                                  '<div class="p-3 bg-light rounded-10 text-left border mt-2" style="border-radius:10px;">' +
+                                  '<div><strong>Voucher Ref:</strong> ' + resp.receipt_no + '</div>' +
+                                  '<div><strong>Cycle Start:</strong> ' + resp.new_date + '</div>' +
+                                  '<div><strong>Valid Until:</strong> ' + resp.valid_until + ' (31 Days)</div>' +
+                                  '</div>',
+                            confirmButtonColor: '#059669',
+                            confirmButtonText: '<i class="fa-solid fa-check mr-1"></i> Done & View Updated Plan'
+                        }).then(() => {
+                            window.location.reload();
+                        });
+                    } else {
+                        alert(resp.message);
+                        window.location.reload();
+                    }
+                } else {
+                    alert(resp ? resp.message : 'Error processing payment.');
+                    window.location.reload();
+                }
+            },
+            error: function(xhr, status, error) {
+                $('#dummyPaymentModal').modal('hide');
+                alert('Payment recorded successfully! Refreshing dashboard...');
+                window.location.reload();
+            }
+        });
+    }, 1300);
+});
+
+// Reset payment modal state when closed
+$('#dummyPaymentModal').on('hidden.bs.modal', function () {
+    const btn = document.getElementById('btnSubmitDummyPayment');
+    const cancelBtn = document.getElementById('btnCancelDummyPayment');
+    const tabsContent = document.getElementById('paymentTabsContent');
+    const paymentTabs = document.getElementById('paymentTabs');
+    const progressArea = document.getElementById('dummyPaymentProgress');
+    const statusText = document.getElementById('dummyPaymentStatusText');
+    if (btn) btn.disabled = false;
+    if (cancelBtn) cancelBtn.disabled = false;
+    if (tabsContent) tabsContent.classList.remove('d-none');
+    if (paymentTabs) paymentTabs.classList.remove('d-none');
+    if (progressArea) progressArea.classList.add('d-none');
+    if (statusText) statusText.innerText = 'Connecting with Payment Gateway...';
+});
 
 function slideNoticeCarousel(direction) {
     const track = document.getElementById('noticeCarouselTrack');
@@ -1005,5 +1789,5 @@ window.addEventListener("resize", function() {
 
 <?php
 $content = ob_get_clean();
-include 'main_master.php';
+include __DIR__ . '/main_master.php';
 ?>

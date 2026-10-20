@@ -27,6 +27,10 @@ if (!isset($_SESSION['warden_id'])) {
   <!-- Google Fonts: Plus Jakarta Sans -->
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   
+  <!-- Core Scripts in Head so content scripts always have access to jQuery & Bootstrap -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/4.6.2/js/bootstrap.bundle.min.js"></script>
+  
   <style>
     /* =========================================================
        WARDEN MASTER DESIGN SYSTEM - EMERALD & FOREST OBSIDIAN
@@ -674,6 +678,12 @@ if (!isset($_SESSION['warden_id'])) {
               <span class="menu-title">Students</span>
             </a>
           </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'attendance.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="attendance.php">
+              <i class="fa-solid fa-clipboard-user menu-icon"></i>
+              <span class="menu-title">Attendance</span>
+            </a>
+          </li>
           <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'food_menu.php') ? 'active' : ''; ?>">
             <a class="nav-link" href="food_menu.php">
               <i class="fa-solid fa-utensils menu-icon"></i>
@@ -684,6 +694,30 @@ if (!isset($_SESSION['warden_id'])) {
             <a class="nav-link" href="notices.php">
               <i class="ti-announcement menu-icon"></i>
               <span class="menu-title">Notices</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'visitors.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="visitors.php">
+              <i class="fa-solid fa-address-book menu-icon"></i>
+              <span class="menu-title">Visitors Book</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'complaints.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="complaints.php">
+              <i class="fa-solid fa-triangle-exclamation menu-icon"></i>
+              <span class="menu-title">Complaints</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'fee_history.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="fee_history.php">
+              <i class="fa-solid fa-receipt menu-icon"></i>
+              <span class="menu-title">Fee History</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'reports.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="reports.php">
+              <i class="fa-solid fa-chart-column menu-icon"></i>
+              <span class="menu-title">Reports & Analytics</span>
             </a>
           </li>
           <li class="nav-item">
@@ -713,8 +747,6 @@ if (!isset($_SESSION['warden_id'])) {
     </div>   
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/4.6.2/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.9.4/Chart.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap4.min.js"></script>

@@ -91,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_visitor'])) {
 
         if ($check_res && $check_res->num_rows > 0) {
             $row_check = $check_res->fetch_assoc();
-            if ($row_check['status'] !== 'Pending') {
+            if (strcasecmp($row_check['status'], 'Pending') !== 0) {
                 $_SESSION['error'] = "Only Pending visitor requests can be modified.";
             } else {
                 $stmt = $conn->prepare("UPDATE `visitors` SET `name` = ?, `phone` = ?, `relationship` = ?, `id_proof_type` = ?, `id_proof_number` = ?, `visit_date` = ?, `expected_in_time` = ?, `expected_out_time` = ?, `purpose` = ? WHERE `id` = ? AND `student_id` = ?");

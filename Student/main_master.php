@@ -381,9 +381,26 @@ $current_page = basename($_SERVER['PHP_SELF']);
       bottom: 22px;
       left: 50%;
       transform: translateX(-50%);
-      z-index: 1050;
+      z-index: 1040;
       width: auto;
       max-width: 95vw;
+      transition: opacity 0.25s ease, transform 0.25s ease, visibility 0.25s;
+    }
+
+    /* Ensure modals and backdrops are always layered strictly above the floating nav */
+    .modal {
+      z-index: 1060 !important;
+    }
+    .modal-backdrop {
+      z-index: 1055 !important;
+    }
+
+    /* Auto hide floating bottom nav when any modal is open so it never blocks footer buttons or inputs */
+    body.modal-open .bottom-floating-nav-container {
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+      transform: translate(-50%, 30px) !important;
     }
 
     .bottom-floating-nav {
