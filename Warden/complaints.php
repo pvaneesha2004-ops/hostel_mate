@@ -20,7 +20,6 @@ $create_complaints_sql = "CREATE TABLE IF NOT EXISTS `complaints` (
     `title` VARCHAR(255) NOT NULL,
     `description` TEXT NOT NULL,
     `image` VARCHAR(255) DEFAULT NULL,
-    `priority` ENUM('low','medium','high','urgent') NOT NULL DEFAULT 'medium',
     `status` ENUM('pending','in_progress','resolved','rejected') NOT NULL DEFAULT 'pending',
     `assigned_to` BIGINT DEFAULT NULL,
     `response` TEXT DEFAULT NULL,
@@ -29,7 +28,6 @@ $create_complaints_sql = "CREATE TABLE IF NOT EXISTS `complaints` (
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX `idx_c_student` (`student_id`),
     INDEX `idx_c_status` (`status`),
-    INDEX `idx_c_priority` (`priority`),
     INDEX `idx_c_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
 $conn->query($create_complaints_sql);
@@ -121,7 +119,6 @@ if (isset($_GET['quick_action']) && isset($_GET['id'])) {
 // -------------------------------------------------------------
 
 $status_filter   = isset($_GET['status']) ? strtolower(trim($_GET['status'])) : 'all';
-$priority_filter = isset($_GET['priority']) ? strtolower(trim($_GET['priority'])) : 'all';
 $date_filter     = isset($_GET['date']) ? trim($_GET['date']) : '';
 $from_date       = isset($_GET['from_date']) ? trim($_GET['from_date']) : '';
 $to_date         = isset($_GET['to_date']) ? trim($_GET['to_date']) : '';
@@ -145,9 +142,6 @@ if ($preset === 'today') {
     $from_date = date('Y-m-01');
     $to_date = date('Y-m-t');
     $active_preset = 'this_month';
-} elseif ($preset === 'urgent') {
-    $priority_filter = 'urgent';
-    $active_preset = 'urgent';
 } elseif ($preset === 'pending') {
     $status_filter = 'pending';
     $active_preset = 'pending';
@@ -181,18 +175,12 @@ if ($status_filter !== 'all') {
     $where_clauses[] = "c.status = '{$safe_status}'";
 }
 
-// 4. Priority Filter
-if ($priority_filter !== 'all') {
-    $safe_prio = $conn->real_escape_string($priority_filter);
-    $where_clauses[] = "c.priority = '{$safe_prio}'";
-}
-
-// 5. Block Filter
+// 4. Block Filter
 if ($block_filter > 0) {
     $where_clauses[] = "ra.block_id = {$block_filter}";
 }
 
-// 6. Search Keyword
+// 5. Search Keyword
 if (!empty($search_keyword)) {
     $safe_q = $conn->real_escape_string($search_keyword);
     $where_clauses[] = "(c.title LIKE '%{$safe_q}%' OR c.description LIKE '%{$safe_q}%' OR u.name LIKE '%{$safe_q}%' OR u.phone LIKE '%{$safe_q}%' OR rm.room_number LIKE '%{$safe_q}%' OR c.response LIKE '%{$safe_q}%')";
@@ -207,8 +195,7 @@ $kpi_query = $conn->query("
         SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) as pending_cnt,
         SUM(CASE WHEN c.status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_cnt,
         SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END) as resolved_cnt,
-        SUM(CASE WHEN c.status = 'rejected' THEN 1 ELSE 0 END) as rejected_cnt,
-        SUM(CASE WHEN c.priority IN ('high', 'urgent') AND c.status != 'resolved' THEN 1 ELSE 0 END) as urgent_open_cnt
+        SUM(CASE WHEN c.status = 'rejected' THEN 1 ELSE 0 END) as rejected_cnt
     FROM complaints c
 ");
 $kpi_stats = ($kpi_query && $kpi_query->num_rows > 0) ? $kpi_query->fetch_assoc() : [];
@@ -218,7 +205,6 @@ $kpi_pending     = intval($kpi_stats['pending_cnt'] ?? 0);
 $kpi_in_progress = intval($kpi_stats['in_progress_cnt'] ?? 0);
 $kpi_resolved    = intval($kpi_stats['resolved_cnt'] ?? 0);
 $kpi_rejected    = intval($kpi_stats['rejected_cnt'] ?? 0);
-$kpi_urgent_open = intval($kpi_stats['urgent_open_cnt'] ?? 0);
 
 // Fetch all available blocks for block filter dropdown
 $blocks_res = $conn->query("SELECT id, name FROM blocks ORDER BY name ASC");
@@ -423,50 +409,6 @@ ob_start();
     background-color: #f8fafc;
   }
 
-  /* Priority Badges */
-  .badge-prio {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 0.74rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    padding: 0.35rem 0.75rem;
-    border-radius: 50px;
-    line-height: 1.2;
-  }
-
-  .badge-prio-urgent {
-    background: #fef2f2;
-    color: #b91c1c;
-    border: 1.5px solid #fecaca;
-    animation: urgentPulse 2s infinite;
-  }
-
-  @keyframes urgentPulse {
-    0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-    70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-  }
-
-  .badge-prio-high {
-    background: #fff7ed;
-    color: #c2410c;
-    border: 1.5px solid #ffedd5;
-  }
-
-  .badge-prio-medium {
-    background: #fefce8;
-    color: #a16207;
-    border: 1.5px solid #fef08a;
-  }
-
-  .badge-prio-low {
-    background: #f1f5f9;
-    color: #475569;
-    border: 1.5px solid #e2e8f0;
-  }
 
   /* Status Badges */
   .badge-c-status {
@@ -664,7 +606,7 @@ ob_start();
        ========================================================= -->
   <div class="row mb-4">
     <!-- Total Complaints -->
-    <div class="col-xl-2 col-md-4 col-sm-6 mb-3">
+    <div class="col-xl-3 col-md-6 col-sm-6 mb-3">
       <div class="c-kpi-card">
         <div>
           <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.74rem; text-transform: uppercase;">Total Registered</span>
@@ -677,7 +619,7 @@ ob_start();
     </div>
 
     <!-- Pending Complaints -->
-    <div class="col-xl-2 col-md-4 col-sm-6 mb-3">
+    <div class="col-xl-3 col-md-6 col-sm-6 mb-3">
       <div class="c-kpi-card">
         <div>
           <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.74rem; text-transform: uppercase;">Pending Action</span>
@@ -690,7 +632,7 @@ ob_start();
     </div>
 
     <!-- In Progress -->
-    <div class="col-xl-2 col-md-4 col-sm-6 mb-3">
+    <div class="col-xl-3 col-md-6 col-sm-6 mb-3">
       <div class="c-kpi-card">
         <div>
           <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.74rem; text-transform: uppercase;">In Progress</span>
@@ -703,7 +645,7 @@ ob_start();
     </div>
 
     <!-- Resolved -->
-    <div class="col-xl-3 col-md-4 col-sm-6 mb-3">
+    <div class="col-xl-3 col-md-6 col-sm-6 mb-3">
       <div class="c-kpi-card">
         <div>
           <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.74rem; text-transform: uppercase;">Resolved & Closed</span>
@@ -711,19 +653,6 @@ ob_start();
         </div>
         <div class="c-kpi-icon icon-c-resolved">
           <i class="fa-solid fa-circle-check"></i>
-        </div>
-      </div>
-    </div>
-
-    <!-- Urgent / High Priority Open -->
-    <div class="col-xl-3 col-md-8 col-sm-12 mb-3">
-      <div class="c-kpi-card" style="border-left: 4px solid #ef4444;">
-        <div>
-          <span class="text-danger font-weight-700 d-block mb-1" style="font-size: 0.74rem; text-transform: uppercase;">Urgent & High (Open)</span>
-          <h3 class="font-weight-800 text-danger mb-0"><?= $kpi_urgent_open ?></h3>
-        </div>
-        <div class="c-kpi-icon icon-c-urgent">
-          <i class="fa-solid fa-fire-flame-curved"></i>
         </div>
       </div>
     </div>
@@ -764,16 +693,13 @@ ob_start();
         <a href="complaints.php?preset=pending" class="preset-pill <?= ($active_preset === 'pending' || $status_filter === 'pending') ? 'active' : '' ?>">
           Pending (<?= $kpi_pending ?>)
         </a>
-        <a href="complaints.php?preset=urgent" class="preset-pill <?= ($active_preset === 'urgent' || $priority_filter === 'urgent') ? 'active' : '' ?>" style="color: #b91c1c;">
-          <i class="fa-solid fa-fire text-danger"></i> Urgent
-        </a>
       </div>
     </div>
 
     <!-- Date Range & Multi-Criteria Filter Form -->
     <form method="GET" action="complaints.php" class="row align-items-end">
       <!-- Specific Date Filter -->
-      <div class="col-lg-2 col-md-3 col-sm-6 mb-3">
+      <div class="col-lg-2 col-md-4 col-sm-6 mb-3">
         <label class="font-weight-700 text-dark mb-1" style="font-size: 0.8rem;">
           <i class="fa-regular fa-calendar mr-1 text-success"></i> Specific Date
         </label>
@@ -781,7 +707,7 @@ ob_start();
       </div>
 
       <!-- Date Range: From Date -->
-      <div class="col-lg-2 col-md-3 col-sm-6 mb-3">
+      <div class="col-lg-2 col-md-4 col-sm-6 mb-3">
         <label class="font-weight-700 text-dark mb-1" style="font-size: 0.8rem;">
           <i class="fa-solid fa-calendar-days mr-1 text-primary"></i> Date From
         </label>
@@ -789,7 +715,7 @@ ob_start();
       </div>
 
       <!-- Date Range: To Date -->
-      <div class="col-lg-2 col-md-3 col-sm-6 mb-3">
+      <div class="col-lg-2 col-md-4 col-sm-6 mb-3">
         <label class="font-weight-700 text-dark mb-1" style="font-size: 0.8rem;">
           <i class="fa-solid fa-calendar-days mr-1 text-primary"></i> Date To
         </label>
@@ -797,7 +723,7 @@ ob_start();
       </div>
 
       <!-- Status Filter -->
-      <div class="col-lg-2 col-md-3 col-sm-6 mb-3">
+      <div class="col-lg-3 col-md-6 col-sm-6 mb-3">
         <label class="font-weight-700 text-dark mb-1" style="font-size: 0.8rem;">Status</label>
         <select name="status" class="form-control custom-form-input">
           <option value="all" <?= ($status_filter === 'all') ? 'selected' : '' ?>>All Statuses</option>
@@ -808,20 +734,8 @@ ob_start();
         </select>
       </div>
 
-      <!-- Priority Filter -->
-      <div class="col-lg-2 col-md-3 col-sm-6 mb-3">
-        <label class="font-weight-700 text-dark mb-1" style="font-size: 0.8rem;">Priority</label>
-        <select name="priority" class="form-control custom-form-input">
-          <option value="all" <?= ($priority_filter === 'all') ? 'selected' : '' ?>>All Priorities</option>
-          <option value="urgent" <?= ($priority_filter === 'urgent') ? 'selected' : '' ?>>Urgent</option>
-          <option value="high" <?= ($priority_filter === 'high') ? 'selected' : '' ?>>High</option>
-          <option value="medium" <?= ($priority_filter === 'medium') ? 'selected' : '' ?>>Medium</option>
-          <option value="low" <?= ($priority_filter === 'low') ? 'selected' : '' ?>>Low</option>
-        </select>
-      </div>
-
       <!-- Block Filter -->
-      <div class="col-lg-2 col-md-3 col-sm-6 mb-3">
+      <div class="col-lg-3 col-md-6 col-sm-6 mb-3">
         <label class="font-weight-700 text-dark mb-1" style="font-size: 0.8rem;">Block</label>
         <select name="block_id" class="form-control custom-form-input">
           <option value="0">All Blocks</option>
@@ -870,7 +784,7 @@ ob_start();
       </div>
 
       <div class="d-flex align-items-center gap-2 mt-2 mt-sm-0">
-        <?php if (!empty($date_filter) || !empty($from_date) || $status_filter !== 'all' || $priority_filter !== 'all' || !empty($search_keyword)): ?>
+        <?php if (!empty($date_filter) || !empty($from_date) || $status_filter !== 'all' || !empty($search_keyword)): ?>
           <span class="badge badge-light border text-muted px-2 py-1 font-weight-600" style="font-size: 0.76rem;">
             Filtered View Active
           </span>
@@ -900,7 +814,6 @@ ob_start();
               <th style="min-width: 135px;">Date Filed</th>
               <th style="min-width: 210px;">Resident Student</th>
               <th style="min-width: 260px;">Complaint Details</th>
-              <th style="width: 105px;" class="text-center">Priority</th>
               <th style="width: 120px;" class="text-center">Status</th>
               <th style="min-width: 180px;">Warden Resolution</th>
               <th style="width: 160px;" class="text-center no-print">Actions</th>
@@ -914,7 +827,6 @@ ob_start();
                 $c_title      = $row['title'];
                 $c_desc       = $row['description'];
                 $c_img        = $row['image'];
-                $c_prio       = strtolower($row['priority'] ?? 'medium');
                 $c_status     = strtolower($row['status'] ?? 'pending');
                 $c_response   = $row['response'];
                 $c_created    = $row['created_at'];
@@ -991,27 +903,6 @@ ob_start();
                   </div>
                 </td>
 
-                <!-- Priority Badge -->
-                <td class="text-center">
-                  <?php if ($c_prio === 'urgent'): ?>
-                    <span class="badge-prio badge-prio-urgent">
-                      <i class="fa-solid fa-fire"></i> Urgent
-                    </span>
-                  <?php elseif ($c_prio === 'high'): ?>
-                    <span class="badge-prio badge-prio-high">
-                      <i class="fa-solid fa-triangle-exclamation"></i> High
-                    </span>
-                  <?php elseif ($c_prio === 'medium'): ?>
-                    <span class="badge-prio badge-prio-medium">
-                      <i class="fa-solid fa-wrench"></i> Medium
-                    </span>
-                  <?php else: ?>
-                    <span class="badge-prio badge-prio-low">
-                      <i class="fa-solid fa-circle-info"></i> Low
-                    </span>
-                  <?php endif; ?>
-                </td>
-
                 <!-- Status Badge -->
                 <td class="text-center">
                   <?php if ($c_status === 'pending'): ?>
@@ -1073,7 +964,6 @@ ob_start();
                               data-student="<?= htmlspecialchars($s_name, ENT_QUOTES) ?>"
                               data-room="<?= htmlspecialchars($s_room, ENT_QUOTES) ?>"
                               data-date="<?= htmlspecialchars($c_date_fmt, ENT_QUOTES) ?>"
-                              data-priority="<?= htmlspecialchars($c_prio, ENT_QUOTES) ?>"
                               data-status="<?= htmlspecialchars($c_status, ENT_QUOTES) ?>"
                               data-response="<?= htmlspecialchars($c_response ?? '', ENT_QUOTES) ?>"
                               title="Update Status & Response">
@@ -1100,7 +990,6 @@ ob_start();
                               data-phone="<?= htmlspecialchars($s_phone, ENT_QUOTES) ?>"
                               data-room="<?= htmlspecialchars($s_room, ENT_QUOTES) ?>"
                               data-date="<?= htmlspecialchars($c_date_fmt . ' • ' . $c_time_fmt, ENT_QUOTES) ?>"
-                              data-priority="<?= htmlspecialchars(ucfirst($c_prio), ENT_QUOTES) ?>"
                               data-status="<?= htmlspecialchars(ucfirst(str_replace('_', ' ', $c_status)), ENT_QUOTES) ?>"
                               data-warden="<?= htmlspecialchars($row['warden_handler_name'] ?? 'Not Assigned', ENT_QUOTES) ?>"
                               data-response="<?= htmlspecialchars($c_response ?? 'None', ENT_QUOTES) ?>"
@@ -1145,9 +1034,8 @@ ob_start();
         <div class="modal-body p-4" style="background: #f8fafc;">
           <!-- Resident & Complaint Overview Card -->
           <div class="alert alert-light border rounded-12 p-3 mb-3" style="background: #ffffff;">
-            <div class="d-flex justify-content-between align-items-start mb-1">
+            <div class="mb-1">
               <strong class="text-dark" id="modal_u_title" style="font-size: 0.94rem;">-</strong>
-              <span class="badge badge-light border text-muted px-2 py-1 font-weight-700" id="modal_u_priority" style="font-size: 0.72rem;">-</span>
             </div>
             <div class="d-flex align-items-center text-muted" style="font-size: 0.78rem;">
               <span class="mr-3"><i class="fa-regular fa-user mr-1 text-primary"></i><strong class="text-dark" id="modal_u_student">-</strong></span>
@@ -1235,14 +1123,9 @@ ob_start();
       </div>
 
       <div class="modal-body p-4" id="printableComplaintArea">
-        <div class="d-flex align-items-center justify-content-between mb-3 pb-2 border-bottom">
-          <div>
-            <h5 class="font-weight-800 text-dark mb-1" id="v_c_title">-</h5>
-            <small class="text-muted font-weight-600"><i class="fa-regular fa-calendar mr-1"></i>Filed on: <span id="v_c_date">-</span></small>
-          </div>
-          <div>
-            <span class="badge badge-primary font-weight-700 px-3 py-1" id="v_c_priority">-</span>
-          </div>
+        <div class="mb-3 pb-2 border-bottom">
+          <h5 class="font-weight-800 text-dark mb-1" id="v_c_title">-</h5>
+          <small class="text-muted font-weight-600"><i class="fa-regular fa-calendar mr-1"></i>Filed on: <span id="v_c_date">-</span></small>
         </div>
 
         <div class="row mb-3">
@@ -1401,7 +1284,6 @@ $(document).ready(function() {
     const title = $(this).data('title');
     const student = $(this).data('student');
     const room = $(this).data('room');
-    const priority = $(this).data('priority');
     const status = $(this).data('status');
     const response = $(this).data('response');
 
@@ -1409,7 +1291,6 @@ $(document).ready(function() {
     $('#modal_u_title').text(title);
     $('#modal_u_student').text(student);
     $('#modal_u_room').text(room);
-    $('#modal_u_priority').text(priority.toUpperCase());
     $('#modal_u_status_select').val(status);
     $('#modal_u_response').val(response);
 
@@ -1426,7 +1307,6 @@ $(document).ready(function() {
     $('#v_c_student').text($(this).data('student'));
     $('#v_c_phone').text($(this).data('phone'));
     $('#v_c_room').text($(this).data('room'));
-    $('#v_c_priority').text($(this).data('priority'));
     $('#v_c_status').text($(this).data('status'));
     $('#v_c_desc').text($(this).data('desc'));
     $('#v_c_warden').text($(this).data('warden'));

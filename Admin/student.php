@@ -58,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action']) && $_POST['a
         }
 
         if ($verification_status == 'verified') {
-            $_SESSION['msg'] = "Student documents verified and account activated successfully! Room allocation is now available.";
+            $_SESSION['msg'] = "Student documents verified and account activated successfully!";
         } elseif ($verification_status == 'rejected') {
             $_SESSION['msg'] = "Student verification marked as Rejected and account set to Inactive.";
         } else {
@@ -66,109 +66,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action']) && $_POST['a
         }
     } else {
         $_SESSION['error'] = "Invalid verification request.";
-    }
-    header("Location: student.php");
-    exit();
-}
-
-// Handle Room & Bed Allocation
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action']) && $_POST['action'] == 'allocate_bed') {
-    $student_id = intval($_POST['student_id'] ?? 0);
-    $block_id = intval($_POST['block_id'] ?? 0);
-    $floor_id = intval($_POST['floor_id'] ?? 0);
-    $room_id = intval($_POST['room_id'] ?? 0);
-    $bed_id = intval($_POST['bed_id'] ?? 0);
-    $allocated_date = !empty($_POST['allocated_date']) ? $_POST['allocated_date'] : date('Y-m-d');
-    $remarks = trim($_POST['remarks'] ?? '');
-
-    // 0. Verify that student is verified before allowing allocation
-    $stu_check = $conn->query("SELECT d.verification FROM users u LEFT JOIN student_documents d ON u.id = d.student_id WHERE u.id = $student_id AND u.role = 'student'");
-    if ($stu_check && $stu = $stu_check->fetch_assoc()) {
-        if (strtolower($stu['verification'] ?? '') !== 'verified') {
-            $_SESSION['error'] = "Cannot allocate room! Student document verification is pending or rejected. Please verify the student first.";
-            header("Location: student.php");
-            exit();
-        }
-    }
-
-    if ($student_id > 0 && $block_id > 0 && $floor_id > 0 && $room_id > 0 && $bed_id > 0) {
-        // 1. Free any previous active allocation for this student
-        $active_alloc = $conn->query("SELECT id, bed_id, room_id FROM room_allocations WHERE student_id=$student_id AND status='active'");
-        if ($active_alloc && $active_alloc->num_rows > 0) {
-            while ($prev = $active_alloc->fetch_assoc()) {
-                $prev_alloc_id = $prev['id'];
-                $prev_bed_id = $prev['bed_id'];
-                $prev_room_id = $prev['room_id'];
-
-                $conn->query("UPDATE room_allocations SET status='vacated', vacated_date=CURDATE(), updated_at=NOW() WHERE id=$prev_alloc_id");
-                if ($prev_bed_id != $bed_id && $prev_bed_id > 0) {
-                    $conn->query("UPDATE beds SET status='available', updated_at=NOW() WHERE id=$prev_bed_id");
-                }
-                if ($prev_room_id != $room_id && $prev_room_id > 0) {
-                    $conn->query("UPDATE rooms SET status='available', updated_at=NOW() WHERE id=$prev_room_id AND status='full'");
-                }
-            }
-        }
-
-        // 2. Insert new room allocation
-        $stmt = $conn->prepare("INSERT INTO room_allocations (student_id, block_id, floor_id, room_id, bed_id, allocated_by, allocated_date, status, remarks, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NOW(), NOW())");
-        $stmt->bind_param("iiiiisss", $student_id, $block_id, $floor_id, $room_id, $bed_id, $admin_id, $allocated_date, $remarks);
-
-        if ($stmt->execute()) {
-            // 3. Mark newly allocated bed as occupied
-            $conn->query("UPDATE beds SET status='occupied', updated_at=NOW() WHERE id=$bed_id");
-
-            // 4. Update room status to 'full' if all its beds are occupied
-            $bed_check = $conn->query("SELECT COUNT(*) as total_beds, SUM(CASE WHEN status='occupied' THEN 1 ELSE 0 END) as occupied_beds FROM beds WHERE room_id=$room_id");
-            if ($bed_check && $b_row = $bed_check->fetch_assoc()) {
-                if ($b_row['total_beds'] > 0 && $b_row['total_beds'] == $b_row['occupied_beds']) {
-                    $conn->query("UPDATE rooms SET status='full', updated_at=NOW() WHERE id=$room_id");
-                }
-            }
-
-            // 5. Insert data into student_fee_history table
-            $room_price = 0;
-            $r_check = $conn->query("SELECT price FROM rooms WHERE id=$room_id");
-            if ($r_check && $r_data = $r_check->fetch_assoc()) {
-                $room_price = intval($r_data['price'] ?? 0);
-            }
-            $fee_date = strtotime($allocated_date) ?: time();
-
-            $fee_stmt = $conn->prepare("INSERT INTO student_fee_history (student_id, price, date, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())");
-            if ($fee_stmt) {
-                $fee_stmt->bind_param("iii", $student_id, $room_price, $fee_date);
-                $fee_stmt->execute();
-            }
-
-            $_SESSION['msg'] = "Room and Bed allocated successfully, and fee record added to student fee history.";
-        } else {
-            $_SESSION['error'] = "Failed to allocate room: " . $conn->error;
-        }
-    } else {
-        $_SESSION['error'] = "Please select all required allocation fields.";
-    }
-    header("Location: student.php");
-    exit();
-}
-
-// Handle Deallocation / Vacate
-if (isset($_GET['deallocate'])) {
-    $alloc_id = intval($_GET['deallocate']);
-    $alloc_res = $conn->query("SELECT id, bed_id, room_id FROM room_allocations WHERE id=$alloc_id AND status='active'");
-    if ($alloc_res && $alloc = $alloc_res->fetch_assoc()) {
-        $bed_id = $alloc['bed_id'];
-        $room_id = $alloc['room_id'];
-
-        $conn->query("UPDATE room_allocations SET status='vacated', vacated_date=CURDATE(), updated_at=NOW() WHERE id=$alloc_id");
-        if ($bed_id > 0) {
-            $conn->query("UPDATE beds SET status='available', updated_at=NOW() WHERE id=$bed_id");
-        }
-        if ($room_id > 0) {
-            $conn->query("UPDATE rooms SET status='available', updated_at=NOW() WHERE id=$room_id AND status='full'");
-        }
-        $_SESSION['msg'] = "Student deallocated and bed marked available successfully.";
-    } else {
-        $_SESSION['error'] = "Active allocation not found.";
     }
     header("Location: student.php");
     exit();
@@ -260,30 +157,7 @@ $query = "
 ";
 $students = $conn->query($query);
 
-// Fetch data for cascading allocation dropdowns
-$blocks_res = $conn->query("SELECT id, name FROM blocks WHERE status='active' OR status='1' ORDER BY name ASC");
-$all_blocks = [];
-if ($blocks_res && $blocks_res->num_rows > 0) {
-    while($b = $blocks_res->fetch_assoc()) { $all_blocks[] = $b; }
-}
 
-$floors_res = $conn->query("SELECT id, block_id, name, floor_number FROM floors ORDER BY floor_number ASC, name ASC");
-$all_floors = [];
-if ($floors_res && $floors_res->num_rows > 0) {
-    while($f = $floors_res->fetch_assoc()) { $all_floors[] = $f; }
-}
-
-$rooms_res = $conn->query("SELECT id, floor_id, room_number, room_type, capacity, price FROM rooms WHERE status != 'inactive' ORDER BY room_number ASC");
-$all_rooms = [];
-if ($rooms_res && $rooms_res->num_rows > 0) {
-    while($r = $rooms_res->fetch_assoc()) { $all_rooms[] = $r; }
-}
-
-$beds_res = $conn->query("SELECT id, room_id, bed_number, status FROM beds ORDER BY bed_number ASC");
-$all_beds = [];
-if ($beds_res && $beds_res->num_rows > 0) {
-    while($bd = $beds_res->fetch_assoc()) { $all_beds[] = $bd; }
-}
 
 // Fetch Fee History by student
 $fee_history_res = $conn->query("SELECT id, student_id, price, date, created_at FROM student_fee_history ORDER BY id DESC");
@@ -452,41 +326,6 @@ ob_start();
                                         data-allocated_date="<?= htmlspecialchars($row['allocated_date'] ?? '') ?>"
                                         data-toggle="modal" data-target="#viewModal"><i class="ti-eye"></i></button>
 
-                                    <!-- Allocation / Verify First Button -->
-                                    <?php if ($isVerified): ?>
-                                        <button class="btn btn-info btn-sm allocate-btn" title="Room & Bed Allocation"
-                                            data-student_id="<?= $row['id'] ?>"
-                                            data-name="<?= htmlspecialchars($row['name']) ?>"
-                                            data-email="<?= htmlspecialchars($row['email']) ?>"
-                                            data-phone="<?= htmlspecialchars($row['phone']) ?>"
-                                            data-allocation_id="<?= $row['allocation_id'] ?? '' ?>"
-                                            data-block_id="<?= $row['block_id'] ?? '' ?>"
-                                            data-floor_id="<?= $row['floor_id'] ?? '' ?>"
-                                            data-room_id="<?= $row['room_id'] ?? '' ?>"
-                                            data-bed_id="<?= $row['bed_id'] ?? '' ?>"
-                                            data-allocated_date="<?= $row['allocated_date'] ?? '' ?>"
-                                            data-allocated_block_name="<?= htmlspecialchars($row['allocated_block_name'] ?? '') ?>"
-                                            data-allocated_floor_name="<?= htmlspecialchars($row['allocated_floor_name'] ?? '') ?>"
-                                            data-allocated_room_number="<?= htmlspecialchars($row['allocated_room_number'] ?? '') ?>"
-                                            data-allocated_room_price="<?= htmlspecialchars($row['allocated_room_price'] ?? '') ?>"
-                                            data-allocated_bed_number="<?= htmlspecialchars($row['allocated_bed_number'] ?? '') ?>"
-                                            data-alloc_remarks="<?= htmlspecialchars($row['alloc_remarks'] ?? '') ?>"
-                                            data-toggle="modal" data-target="#allocationModal"><i class="ti-layout-grid2 mr-1"></i>Allocate</button>
-                                    <?php else: ?>
-                                        <button class="btn btn-outline-warning btn-sm verify-btn" title="Verification Required Before Allocation"
-                                            data-student_id="<?= $row['id'] ?>"
-                                            data-name="<?= htmlspecialchars($row['name']) ?>"
-                                            data-email="<?= htmlspecialchars($row['email']) ?>"
-                                            data-phone="<?= htmlspecialchars($row['phone']) ?>"
-                                            data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
-                                            data-document_type="<?= htmlspecialchars($row['document_type'] ?? 'College ID') ?>"
-                                            data-document_number="<?= htmlspecialchars($row['document_number'] ?? 'N/A') ?>"
-                                            data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
-                                            data-verification="<?= htmlspecialchars($row['verification'] ?? 'pending') ?>"
-                                            data-doc_remarks="<?= htmlspecialchars($row['doc_remarks'] ?? '') ?>"
-                                            data-toggle="modal" data-target="#verifyModal"><i class="ti-check-box mr-1"></i>Verify First</button>
-                                    <?php endif; ?>
-
                                     <!-- Delete Button -->
                                     <a href="javascript:void(0);" data-url="student.php?delete=<?= $row['id'] ?>" class="btn btn-danger btn-sm delete-btn" title="Delete"><i class="ti-trash"></i></a>
                                 </td>
@@ -527,7 +366,7 @@ ob_start();
 
             <!-- Verification Notice Box -->
             <div class="alert alert-warning py-2 px-3 mb-3 rounded small" id="verify_notice_box">
-                <i class="ti-alert mr-1"></i> <strong>Note:</strong> Verifying documents will activate the student account and unlock the <strong>Room & Bed Allocation</strong> button.
+                <i class="ti-alert mr-1"></i> <strong>Note:</strong> Verifying documents will activate the student account.
             </div>
 
             <!-- Document Details Card -->
@@ -561,90 +400,7 @@ ob_start();
   </div>
 </div>
 
-<!-- Allocation Modal -->
-<div class="modal fade" id="allocationModal" tabindex="-1" role="dialog">
-  <div class="modal-dialog" role="document">
-    <div class="modal-content">
-      <form method="POST" action="" id="allocForm">
-          <div class="modal-header">
-            <h5 class="modal-title">Room & Bed Allocation</h5>
-            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-              <span aria-hidden="true">&times;</span>
-            </button>
-          </div>
-          <div class="modal-body">
-            <input type="hidden" name="action" value="allocate_bed">
-            <input type="hidden" name="student_id" id="alloc_student_id">
 
-            <!-- Student Summary Banner -->
-            <div class="p-3 mb-3 rounded" style="background: #eff6ff; border: 1px solid #bfdbfe;">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <h6 class="mb-1 font-weight-bold text-primary" id="alloc_student_name"></h6>
-                        <small class="text-muted"><i class="ti-email mr-1"></i><span id="alloc_student_email"></span> | <i class="ti-mobile mr-1"></i><span id="alloc_student_phone"></span></small>
-                    </div>
-                    <span class="badge badge-success"><i class="ti-check mr-1"></i>Verified</span>
-                </div>
-            </div>
-
-            <!-- Current Allocation Status Box -->
-            <div id="alloc_current_status_box" class="mb-3"></div>
-
-            <div class="form-group">
-                <label>Block <span class="text-danger">*</span></label>
-                <select name="block_id" id="alloc_block_id" class="form-control">
-                    <option value="">Select Block</option>
-                    <?php foreach($all_blocks as $blk): ?>
-                        <option value="<?= $blk['id'] ?>"><?= htmlspecialchars($blk['name']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <small class="text-danger" id="alloc_block_err"></small>
-            </div>
-
-            <div class="form-group">
-                <label>Floor <span class="text-danger">*</span></label>
-                <select name="floor_id" id="alloc_floor_id" class="form-control" disabled>
-                    <option value="">Select Block first</option>
-                </select>
-                <small class="text-danger" id="alloc_floor_err"></small>
-            </div>
-
-            <div class="form-group">
-                <label>Room <span class="text-danger">*</span></label>
-                <select name="room_id" id="alloc_room_id" class="form-control" disabled>
-                    <option value="">Select Floor first</option>
-                </select>
-                <small class="text-danger" id="alloc_room_err"></small>
-                <small class="text-muted d-block mt-1" id="alloc_room_price_info"></small>
-            </div>
-
-            <div class="form-group">
-                <label>Bed <span class="text-danger">*</span></label>
-                <select name="bed_id" id="alloc_bed_id" class="form-control" disabled>
-                    <option value="">Select Room first</option>
-                </select>
-                <small class="text-danger" id="alloc_bed_err"></small>
-            </div>
-
-            <div class="form-group">
-                <label>Allocation Date <span class="text-danger">*</span></label>
-                <input type="date" name="allocated_date" id="alloc_date" class="form-control" value="<?= date('Y-m-d') ?>">
-                <small class="text-danger" id="alloc_date_err"></small>
-            </div>
-
-            <div class="form-group">
-                <label>Remarks</label>
-                <textarea name="remarks" id="alloc_remarks" class="form-control" rows="2" placeholder="Optional allocation remarks"></textarea>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
-            <button type="submit" class="btn btn-primary" id="alloc_submit_btn">Save Allocation</button>
-          </div>
-      </form>
-    </div>
-  </div>
-</div>
 
 <!-- View Details Modal -->
 <div class="modal fade" id="viewModal" tabindex="-1" role="dialog">
@@ -734,13 +490,7 @@ ob_start();
     }
 </style>
 <script>
-// JSON Data for Cascading Dropdowns
-const floorsData = <?= json_encode($all_floors) ?>;
-const roomsData = <?= json_encode($all_rooms) ?>;
-const bedsData = <?= json_encode($all_beds) ?>;
 const feeHistoryData = <?= json_encode($fee_history_by_student) ?>;
-
-let currentAllocBedId = null;
 
 document.addEventListener("DOMContentLoaded", function() {
     if ($.fn.DataTable && !$.fn.DataTable.isDataTable('.datatable')) {
@@ -911,211 +661,6 @@ document.addEventListener("DOMContentLoaded", function() {
     $('#btn_reject_verification').on('click', function() {
         $('#verify_status_input').val('rejected');
         $('#verifyForm').submit();
-    });
-
-    // Cascading Dropdown Handlers
-    function populateFloors(blockId, selectedFloorId = null) {
-        let $floorSelect = $('#alloc_floor_id');
-        $floorSelect.html('<option value="">Select Floor</option>');
-        
-        if (!blockId) {
-            $floorSelect.prop('disabled', true);
-            return;
-        }
-
-        const filteredFloors = floorsData.filter(f => f.block_id == blockId);
-        filteredFloors.forEach(f => {
-            const sel = (selectedFloorId && f.id == selectedFloorId) ? 'selected' : '';
-            $floorSelect.append('<option value="' + f.id + '" ' + sel + '>' + f.name + '</option>');
-        });
-
-        $floorSelect.prop('disabled', false);
-    }
-
-    function populateRooms(floorId, selectedRoomId = null) {
-        let $roomSelect = $('#alloc_room_id');
-        $roomSelect.html('<option value="">Select Room</option>');
-        $('#alloc_room_price_info').html('');
-        
-        if (!floorId) {
-            $roomSelect.prop('disabled', true);
-            return;
-        }
-
-        const filteredRooms = roomsData.filter(r => r.floor_id == floorId);
-        filteredRooms.forEach(r => {
-            const sel = (selectedRoomId && r.id == selectedRoomId) ? 'selected' : '';
-            const typeStr = r.room_type ? ' (' + r.room_type.charAt(0).toUpperCase() + r.room_type.slice(1) + ')' : '';
-            const priceVal = r.price ? Number(r.price) : 0;
-            const priceStr = priceVal > 0 ? ' - ₹' + priceVal.toLocaleString('en-IN') : '';
-            $roomSelect.append('<option value="' + r.id + '" data-price="' + priceVal + '" ' + sel + '>Room ' + r.room_number + typeStr + priceStr + '</option>');
-        });
-
-        $roomSelect.prop('disabled', false);
-
-        if (selectedRoomId) {
-            var selectedOpt = $roomSelect.find('option:selected');
-            var price = selectedOpt.data('price');
-            if (price) {
-                $('#alloc_room_price_info').html('<i class="ti-tag mr-1 text-success"></i>Room Price: <strong class="text-success">₹' + Number(price).toLocaleString('en-IN') + '</strong> (recorded in fee history)');
-            }
-        }
-    }
-
-    function populateBeds(roomId, selectedBedId = null) {
-        let $bedSelect = $('#alloc_bed_id');
-        $bedSelect.html('<option value="">Select Bed</option>');
-        
-        if (!roomId) {
-            $bedSelect.prop('disabled', true);
-            return;
-        }
-
-        const filteredBeds = bedsData.filter(b => b.room_id == roomId && (b.status === 'available' || b.id == selectedBedId));
-        if (filteredBeds.length === 0) {
-            $bedSelect.append('<option value="" disabled>No available beds in this room</option>');
-        } else {
-            filteredBeds.forEach(b => {
-                const sel = (selectedBedId && b.id == selectedBedId) ? 'selected' : '';
-                const statusStr = (b.id == selectedBedId) ? ' (Current Allocated)' : '';
-                $bedSelect.append('<option value="' + b.id + '" ' + sel + '>Bed ' + b.bed_number + statusStr + '</option>');
-            });
-        }
-
-        $bedSelect.prop('disabled', false);
-    }
-
-    $('#alloc_block_id').on('change', function() {
-        populateFloors($(this).val());
-        $('#alloc_room_id').html('<option value="">Select Floor first</option>').prop('disabled', true);
-        $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
-        $('#alloc_room_price_info').html('');
-    });
-
-    $('#alloc_floor_id').on('change', function() {
-        populateRooms($(this).val());
-        $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
-    });
-
-    $('#alloc_room_id').on('change', function() {
-        populateBeds($(this).val(), currentAllocBedId);
-        var selectedOpt = $(this).find('option:selected');
-        var price = selectedOpt.data('price');
-        if (price) {
-            $('#alloc_room_price_info').html('<i class="ti-tag mr-1 text-success"></i>Room Price: <strong class="text-success">₹' + Number(price).toLocaleString('en-IN') + '</strong> (will be recorded in fee history)');
-        } else {
-            $('#alloc_room_price_info').html('');
-        }
-    });
-
-    // Open Allocation Modal
-    $(document).on('click', '.allocate-btn', function() {
-        var studentId = $(this).data('student_id');
-        var name = $(this).data('name');
-        var email = $(this).data('email');
-        var phone = $(this).data('phone');
-
-        var allocId = $(this).data('allocation_id');
-        var blockId = $(this).data('block_id');
-        var floorId = $(this).data('floor_id');
-        var roomId = $(this).data('room_id');
-        var bedId = $(this).data('bed_id');
-        var allocDate = $(this).data('allocated_date');
-        var allocRemarks = $(this).data('alloc_remarks');
-
-        var allocBlock = $(this).data('allocated_block_name');
-        var allocFloor = $(this).data('allocated_floor_name');
-        var allocRoom = $(this).data('allocated_room_number');
-        var allocBed = $(this).data('allocated_bed_number');
-
-        currentAllocBedId = bedId ? bedId : null;
-
-        $('#alloc_student_id').val(studentId);
-        $('#alloc_student_name').text(name);
-        $('#alloc_student_email').text(email);
-        $('#alloc_student_phone').text(phone);
-        $('#alloc_remarks').val(allocRemarks ? allocRemarks : '');
-        $('#alloc_date').val(allocDate ? allocDate : new Date().toISOString().split('T')[0]);
-
-        // Clear error text
-        $('#alloc_block_err').text('');
-        $('#alloc_floor_err').text('');
-        $('#alloc_room_err').text('');
-        $('#alloc_bed_err').text('');
-        $('#alloc_date_err').text('');
-
-        if (allocId && allocId != '') {
-            $('#alloc_current_status_box').html(
-                '<div class="alert alert-info py-2 px-3 mb-0 d-flex justify-content-between align-items-center rounded">' +
-                    '<div>' +
-                        '<strong>Currently Allocated:</strong><br>' +
-                        '<small>' + allocBlock + ' (' + allocFloor + ') &bull; Room ' + allocRoom + ' &bull; <strong>Bed ' + allocBed + '</strong>' + (allocDate ? ' &bull; Date: ' + allocDate : '') + '</small>' +
-                    '</div>' +
-                    '<a href="javascript:void(0);" data-url="student.php?deallocate=' + allocId + '" class="btn btn-danger btn-sm deallocate-btn ml-2" title="Vacate Bed"><i class="ti-close mr-1"></i>Vacate</a>' +
-                '</div>'
-            );
-            $('#alloc_submit_btn').text('Update Allocation');
-
-            $('#alloc_block_id').val(blockId);
-            populateFloors(blockId, floorId);
-            populateRooms(floorId, roomId);
-            populateBeds(roomId, bedId);
-        } else {
-            $('#alloc_current_status_box').html(
-                '<div class="alert alert-secondary py-2 px-3 mb-0 rounded text-muted font-italic">' +
-                    '<small><i class="ti-info-alt mr-1"></i> Student currently has no active room/bed allocation.</small>' +
-                '</div>'
-            );
-            $('#alloc_submit_btn').text('Allocate Room');
-
-            $('#alloc_block_id').val('');
-            $('#alloc_floor_id').html('<option value="">Select Block first</option>').prop('disabled', true);
-            $('#alloc_room_id').html('<option value="">Select Floor first</option>').prop('disabled', true);
-            $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
-        }
-    });
-
-    // Validate Allocation Form
-    $('#allocForm').on('submit', function(e) {
-        let valid = true;
-        let blockId = $('#alloc_block_id').val();
-        let floorId = $('#alloc_floor_id').val();
-        let roomId = $('#alloc_room_id').val();
-        let bedId = $('#alloc_bed_id').val();
-        let allocDate = $('#alloc_date').val();
-
-        if (!blockId) { $('#alloc_block_err').text('Block selection is mandatory'); valid = false; } else { $('#alloc_block_err').text(''); }
-        if (!floorId) { $('#alloc_floor_err').text('Floor selection is mandatory'); valid = false; } else { $('#alloc_floor_err').text(''); }
-        if (!roomId) { $('#alloc_room_err').text('Room selection is mandatory'); valid = false; } else { $('#alloc_room_err').text(''); }
-        if (!bedId) { $('#alloc_bed_err').text('Bed selection is mandatory'); valid = false; } else { $('#alloc_bed_err').text(''); }
-        if (!allocDate) { $('#alloc_date_err').text('Allocation Date is mandatory'); valid = false; } else { $('#alloc_date_err').text(''); }
-
-        if (!valid) {
-            e.preventDefault();
-        }
-    });
-
-    // Deallocate Confirmation with SweetAlert
-    $(document).on('click', '.deallocate-btn', function(e) {
-        e.preventDefault();
-        var url = $(this).data('url');
-
-        Swal.fire({
-            title: 'Vacate this Bed?',
-            text: "The student will be deallocated and the bed will become available.",
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#d33',
-            cancelButtonColor: '#3085d6',
-            confirmButtonText: 'Yes, vacate it!',
-            customClass: {
-                popup: 'custom-swal-popup'
-            }
-        }).then((result) => {
-            if (result.isConfirmed) {
-                window.location.href = url;
-            }
-        });
     });
 
     // Delete Confirmation with SweetAlert

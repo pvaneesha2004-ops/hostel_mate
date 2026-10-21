@@ -254,7 +254,6 @@ ob_start();
                     <option value="single">Single</option>
                     <option value="double">Double</option>
                     <option value="triple">Triple</option>
-                    <option value="dormitory">Dormitory</option>
                 </select>
                 <small class="text-danger" id="add_room_type_err"></small>
             </div>
@@ -327,7 +326,6 @@ ob_start();
                     <option value="single">Single</option>
                     <option value="double">Double</option>
                     <option value="triple">Triple</option>
-                    <option value="dormitory">Dormitory</option>
                 </select>
                 <small class="text-danger" id="edit_room_type_err"></small>
             </div>

@@ -18,7 +18,6 @@ $create_table_sql = "CREATE TABLE IF NOT EXISTS `complaints` (
     `title` VARCHAR(255) NOT NULL,
     `description` TEXT NOT NULL,
     `image` VARCHAR(255) DEFAULT NULL,
-    `priority` VARCHAR(50) NOT NULL DEFAULT 'medium',
     `status` VARCHAR(50) NOT NULL DEFAULT 'pending',
     `assigned_to` VARCHAR(100) DEFAULT NULL,
     `response` TEXT DEFAULT NULL,
@@ -26,8 +25,7 @@ $create_table_sql = "CREATE TABLE IF NOT EXISTS `complaints` (
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX `idx_student` (`student_id`),
-    INDEX `idx_status` (`status`),
-    INDEX `idx_priority` (`priority`)
+    INDEX `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
 
 $conn->query($create_table_sql);
@@ -59,13 +57,7 @@ function handleComplaintImageUpload($file_input_name) {
 // Handle Add Complaint
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_complaint'])) {
     $title       = isset($_POST['title']) ? trim($_POST['title']) : '';
-    $priority    = isset($_POST['priority']) ? trim($_POST['priority']) : 'medium';
     $description = isset($_POST['description']) ? trim($_POST['description']) : '';
-
-    $allowed_priorities = ['low', 'medium', 'high', 'urgent'];
-    if (!in_array($priority, $allowed_priorities)) {
-        $priority = 'medium';
-    }
 
     if (empty($title) || empty($description)) {
         $_SESSION['error'] = "Please fill in all required fields marked with *.";
@@ -73,11 +65,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_complaint'])) {
         $uploaded_image = handleComplaintImageUpload('image');
         $image_name = ($uploaded_image !== null) ? $uploaded_image : '';
 
-        $stmt = $conn->prepare("INSERT INTO `complaints` (`student_id`, `title`, `description`, `image`, `priority`, `status`) VALUES (?, ?, ?, ?, ?, 'pending')");
+        $stmt = $conn->prepare("INSERT INTO `complaints` (`student_id`, `title`, `description`, `image`, `status`) VALUES (?, ?, ?, ?, 'pending')");
         if ($stmt) {
-            $stmt->bind_param("issss", $student_id, $title, $description, $image_name, $priority);
+            $stmt->bind_param("isss", $student_id, $title, $description, $image_name);
             if ($stmt->execute()) {
-                $_SESSION['msg'] = "Complaint '{$title}' registered successfully with " . strtoupper($priority) . " priority!";
+                $_SESSION['msg'] = "Complaint '{$title}' registered successfully!";
             } else {
                 $_SESSION['error'] = "Failed to register complaint: " . $conn->error;
             }
@@ -94,13 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_complaint'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_complaint'])) {
     $complaint_id = isset($_POST['complaint_id']) ? intval($_POST['complaint_id']) : 0;
     $title        = isset($_POST['title']) ? trim($_POST['title']) : '';
-    $priority     = isset($_POST['priority']) ? trim($_POST['priority']) : 'medium';
     $description  = isset($_POST['description']) ? trim($_POST['description']) : '';
-
-    $allowed_priorities = ['low', 'medium', 'high', 'urgent'];
-    if (!in_array($priority, $allowed_priorities)) {
-        $priority = 'medium';
-    }
 
     if ($complaint_id <= 0 || empty($title) || empty($description)) {
         $_SESSION['error'] = "Please fill in all required fields marked with *.";
@@ -119,9 +105,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_complaint'])) {
                 $new_image = handleComplaintImageUpload('image');
                 $final_image = ($new_image !== null) ? $new_image : ($existing_row['image'] ?? '');
 
-                $stmt = $conn->prepare("UPDATE `complaints` SET `title` = ?, `description` = ?, `priority` = ?, `image` = ? WHERE `id` = ? AND `student_id` = ?");
+                $stmt = $conn->prepare("UPDATE `complaints` SET `title` = ?, `description` = ?, `image` = ? WHERE `id` = ? AND `student_id` = ?");
                 if ($stmt) {
-                    $stmt->bind_param("ssssii", $title, $description, $priority, $final_image, $complaint_id, $student_id);
+                    $stmt->bind_param("sssii", $title, $description, $final_image, $complaint_id, $student_id);
                     if ($stmt->execute()) {
                         $_SESSION['msg'] = "Complaint updated successfully!";
                     } else {
@@ -141,7 +127,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_complaint'])) {
 
 // Handle Filters
 $selected_month    = isset($_GET['month']) ? trim($_GET['month']) : date('Y-m');
-$selected_priority = isset($_GET['priority']) ? trim($_GET['priority']) : 'all';
 $selected_status   = isset($_GET['status']) ? trim($_GET['status']) : 'all';
 
 $where_clauses = ["`student_id` = {$student_id}"];
@@ -149,11 +134,6 @@ $where_clauses = ["`student_id` = {$student_id}"];
 if (!empty($selected_month)) {
     $safe_month = $conn->real_escape_string($selected_month);
     $where_clauses[] = "DATE_FORMAT(`created_at`, '%Y-%m') = '{$safe_month}'";
-}
-
-if (!empty($selected_priority) && $selected_priority !== 'all') {
-    $safe_priority = $conn->real_escape_string($selected_priority);
-    $where_clauses[] = "`priority` = '{$safe_priority}'";
 }
 
 if (!empty($selected_status) && $selected_status !== 'all') {
@@ -175,21 +155,21 @@ if ($complaints_query && $complaints_query->num_rows > 0) {
 $stats_query = $conn->query("SELECT 
     COUNT(*) as total_cnt,
     SUM(CASE WHEN `status` = 'pending' THEN 1 ELSE 0 END) as pending_cnt,
-    SUM(CASE WHEN `priority` IN ('high', 'urgent') THEN 1 ELSE 0 END) as urgent_cnt,
+    SUM(CASE WHEN `status` = 'in_progress' THEN 1 ELSE 0 END) as in_progress_cnt,
     SUM(CASE WHEN `status` IN ('resolved', 'closed') THEN 1 ELSE 0 END) as resolved_cnt
     FROM `complaints` WHERE {$where_sql}");
 
 $stats = $stats_query ? $stats_query->fetch_assoc() : [
     'total_cnt' => 0,
     'pending_cnt' => 0,
-    'urgent_cnt' => 0,
+    'in_progress_cnt' => 0,
     'resolved_cnt' => 0
 ];
 
-$total_cnt    = intval($stats['total_cnt']);
-$pending_cnt  = intval($stats['pending_cnt']);
-$urgent_cnt   = intval($stats['urgent_cnt']);
-$resolved_cnt = intval($stats['resolved_cnt']);
+$total_cnt       = intval($stats['total_cnt']);
+$pending_cnt     = intval($stats['pending_cnt']);
+$in_progress_cnt = intval($stats['in_progress_cnt']);
+$resolved_cnt    = intval($stats['resolved_cnt']);
 
 ob_start();
 ?>
@@ -251,7 +231,7 @@ ob_start();
   .stat-icon-urgent { background: #fee2e2; color: #dc2626; }
   .stat-icon-resolved { background: #d1fae5; color: #059669; }
 
-  /* Priority & Status Badges */
+  /* Status Badges */
   .badge-custom {
     display: inline-flex;
     align-items: center;
@@ -264,11 +244,6 @@ ob_start();
     text-transform: capitalize;
   }
 
-  /* Priorities */
-  .badge-priority-low { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
-  .badge-priority-medium { background: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; }
-  .badge-priority-high { background: #ffedd5; color: #9a3412; border: 1px solid #fdba74; }
-  .badge-priority-urgent { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
 
   /* Statuses */
   .badge-status-pending { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
@@ -433,11 +408,11 @@ ob_start();
     <div class="stat-card-widget">
       <div class="d-flex align-items-center justify-content-between">
         <div>
-          <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">Urgent & High</span>
-          <h3 class="font-weight-bold text-danger mb-0"><?= $urgent_cnt ?></h3>
+          <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">In Progress</span>
+          <h3 class="font-weight-bold text-primary mb-0"><?= $in_progress_cnt ?></h3>
         </div>
-        <div class="stat-icon-wrapper stat-icon-urgent">
-          <i class="fa-solid fa-fire"></i>
+        <div class="stat-icon-wrapper" style="background: rgba(99, 102, 241, 0.12); color: #6366f1; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">
+          <i class="fa-solid fa-gears"></i>
         </div>
       </div>
     </div>
@@ -461,23 +436,12 @@ ob_start();
 <!-- Filter Controls Card -->
 <div class="filter-control-card">
   <form method="GET" action="complaints.php" class="form-row align-items-end">
-    <div class="col-md-3 col-sm-6 mb-2 mb-md-0">
+    <div class="col-md-4 col-sm-6 mb-2 mb-md-0">
       <label class="font-weight-600 text-dark mb-1" style="font-size: 0.83rem;">Select Month</label>
       <input type="month" name="month" class="form-control custom-form-control" value="<?= htmlspecialchars($selected_month) ?>">
     </div>
 
-    <div class="col-md-3 col-sm-6 mb-2 mb-md-0">
-      <label class="font-weight-600 text-dark mb-1" style="font-size: 0.83rem;">Priority</label>
-      <select name="priority" class="form-control custom-form-control">
-        <option value="all" <?= ($selected_priority == 'all') ? 'selected' : '' ?>>All Priorities</option>
-        <option value="low" <?= ($selected_priority == 'low') ? 'selected' : '' ?>>Low</option>
-        <option value="medium" <?= ($selected_priority == 'medium') ? 'selected' : '' ?>>Medium</option>
-        <option value="high" <?= ($selected_priority == 'high') ? 'selected' : '' ?>>High</option>
-        <option value="urgent" <?= ($selected_priority == 'urgent') ? 'selected' : '' ?>>Urgent</option>
-      </select>
-    </div>
-
-    <div class="col-md-3 col-sm-6 mb-2 mb-md-0">
+    <div class="col-md-4 col-sm-6 mb-2 mb-md-0">
       <label class="font-weight-600 text-dark mb-1" style="font-size: 0.83rem;">Status</label>
       <select name="status" class="form-control custom-form-control">
         <option value="all" <?= ($selected_status == 'all') ? 'selected' : '' ?>>All Statuses</option>
@@ -488,7 +452,7 @@ ob_start();
       </select>
     </div>
 
-    <div class="col-md-3 col-sm-12 d-flex gap-2">
+    <div class="col-md-4 col-sm-12 d-flex gap-2">
       <button type="submit" class="btn btn-student-primary flex-grow-1">
         <i class="fa-solid fa-filter"></i> Apply Filter
       </button>
@@ -529,7 +493,7 @@ ob_start();
             </div>
             <h5 class="font-weight-bold text-dark mb-1">No Complaints Found</h5>
             <p class="text-muted mb-0" style="max-width: 480px; margin: 0 auto; font-size: 0.9rem;">
-              No complaints match your selected month, priority, or status filter.
+              No complaints match your selected month or status filter.
             </p>
             <button type="button" class="btn btn-student-primary font-weight-bold mt-3" data-toggle="modal" data-target="#addComplaintModal">
               <i class="fa-solid fa-plus-circle mr-1"></i> Register New Complaint
@@ -543,7 +507,6 @@ ob_start();
                   <th style="width: 50px;" class="text-center">#</th>
                   <th style="width: 60px;" class="text-center">Image</th>
                   <th style="min-width: 180px;">Title</th>
-                  <th style="min-width: 110px;">Priority</th>
                   <th style="min-width: 120px;">Status</th>
                   <th style="min-width: 140px;">Assigned To</th>
                   <th style="min-width: 130px;">Date Raised</th>
@@ -556,7 +519,6 @@ ob_start();
                 foreach ($complaints_records as $row): 
                   $created_date_fmt = date('d M, Y', strtotime($row['created_at']));
                   $created_time_fmt = date('h:i A', strtotime($row['created_at']));
-                  $prio_val         = strtolower($row['priority']);
                   $status_val       = strtolower($row['status']);
                 ?>
                   <tr>
@@ -575,26 +537,6 @@ ob_start();
                     <td>
                       <span class="font-weight-700 text-dark d-block"><?= htmlspecialchars($row['title']) ?></span>
                       <small class="text-muted d-block text-truncate" style="max-width: 260px;"><?= htmlspecialchars($row['description']) ?></small>
-                    </td>
-
-                    <td>
-                      <?php if ($prio_val === 'urgent'): ?>
-                        <span class="badge-custom badge-priority-urgent">
-                          <i class="fa-solid fa-fire"></i> Urgent
-                        </span>
-                      <?php elseif ($prio_val === 'high'): ?>
-                        <span class="badge-custom badge-priority-high">
-                          <i class="fa-solid fa-angles-up"></i> High
-                        </span>
-                      <?php elseif ($prio_val === 'low'): ?>
-                        <span class="badge-custom badge-priority-low">
-                          <i class="fa-solid fa-angle-down"></i> Low
-                        </span>
-                      <?php else: ?>
-                        <span class="badge-custom badge-priority-medium">
-                          <i class="fa-solid fa-minus"></i> Medium
-                        </span>
-                      <?php endif; ?>
                     </td>
 
                     <td>
@@ -679,23 +621,10 @@ ob_start();
           <div class="row">
             
             <!-- Complaint Title -->
-            <div class="col-md-8 form-group mb-3">
+            <div class="col-12 form-group mb-3">
               <label class="font-weight-600 text-dark" style="font-size: 0.88rem;">Complaint Subject / Title <span class="text-danger">*</span></label>
               <input type="text" name="title" id="add_title" class="form-control custom-form-control" placeholder="e.g. Fan not working in Room 204">
               <small class="text-danger error-text font-weight-600 d-block mt-1" id="add_title_err"></small>
-            </div>
-
-            <!-- Priority -->
-            <div class="col-md-4 form-group mb-3">
-              <label class="font-weight-600 text-dark" style="font-size: 0.88rem;">Priority Level <span class="text-danger">*</span></label>
-              <select name="priority" id="add_priority" class="form-control custom-form-control">
-                <option value="">Select Priority</option>
-                <option value="low">Low Priority</option>
-                <option value="medium" selected>Medium Priority</option>
-                <option value="high">High Priority</option>
-                <option value="urgent">Urgent</option>
-              </select>
-              <small class="text-danger error-text font-weight-600 d-block mt-1" id="add_priority_err"></small>
             </div>
 
             <!-- Description -->
@@ -761,23 +690,10 @@ ob_start();
           <div class="row">
             
             <!-- Complaint Title -->
-            <div class="col-md-8 form-group mb-3">
+            <div class="col-12 form-group mb-3">
               <label class="font-weight-600 text-dark" style="font-size: 0.88rem;">Complaint Subject / Title <span class="text-danger">*</span></label>
               <input type="text" name="title" id="edit_title" class="form-control custom-form-control">
               <small class="text-danger error-text font-weight-600 d-block mt-1" id="edit_title_err"></small>
-            </div>
-
-            <!-- Priority -->
-            <div class="col-md-4 form-group mb-3">
-              <label class="font-weight-600 text-dark" style="font-size: 0.88rem;">Priority Level <span class="text-danger">*</span></label>
-              <select name="priority" id="edit_priority" class="form-control custom-form-control">
-                <option value="">Select Priority</option>
-                <option value="low">Low Priority</option>
-                <option value="medium">Medium Priority</option>
-                <option value="high">High Priority</option>
-                <option value="urgent">Urgent</option>
-              </select>
-              <small class="text-danger error-text font-weight-600 d-block mt-1" id="edit_priority_err"></small>
             </div>
 
             <!-- Description -->
@@ -817,20 +733,13 @@ function validateAddComplaintForm() {
     let isValid = true;
 
     document.getElementById('add_title_err').innerText = '';
-    document.getElementById('add_priority_err').innerText = '';
     document.getElementById('add_description_err').innerText = '';
 
     const title = document.getElementById('add_title').value.trim();
-    const priority = document.getElementById('add_priority').value.trim();
     const description = document.getElementById('add_description').value.trim();
 
     if (title === '') {
         document.getElementById('add_title_err').innerText = 'Complaint subject/title is required.';
-        isValid = false;
-    }
-
-    if (priority === '') {
-        document.getElementById('add_priority_err').innerText = 'Please select a priority level.';
         isValid = false;
     }
 
@@ -846,20 +755,13 @@ function validateEditComplaintForm() {
     let isValid = true;
 
     document.getElementById('edit_title_err').innerText = '';
-    document.getElementById('edit_priority_err').innerText = '';
     document.getElementById('edit_description_err').innerText = '';
 
     const title = document.getElementById('edit_title').value.trim();
-    const priority = document.getElementById('edit_priority').value.trim();
     const description = document.getElementById('edit_description').value.trim();
 
     if (title === '') {
         document.getElementById('edit_title_err').innerText = 'Complaint subject/title is required.';
-        isValid = false;
-    }
-
-    if (priority === '') {
-        document.getElementById('edit_priority_err').innerText = 'Please select a priority level.';
         isValid = false;
     }
 
@@ -873,12 +775,10 @@ function validateEditComplaintForm() {
 
 function editComplaint(data) {
     document.getElementById('edit_title_err').innerText = '';
-    document.getElementById('edit_priority_err').innerText = '';
     document.getElementById('edit_description_err').innerText = '';
 
     document.getElementById('edit_complaint_id').value = data.id;
     document.getElementById('edit_title').value = data.title;
-    document.getElementById('edit_priority').value = data.priority.toLowerCase();
     document.getElementById('edit_description').value = data.description;
 
     $('#editComplaintModal').modal('show');
@@ -893,9 +793,6 @@ document.addEventListener("input", function(e) {
 });
 
 document.addEventListener("change", function(e) {
-    if (e.target.id === 'add_priority') document.getElementById('add_priority_err').innerText = '';
-    if (e.target.id === 'edit_priority') document.getElementById('edit_priority_err').innerText = '';
-
     if (e.target && e.target.classList.contains('custom-file-input')) {
         var fileName = e.target.files[0] ? e.target.files[0].name : "Choose file...";
         var label = e.target.nextElementSibling;

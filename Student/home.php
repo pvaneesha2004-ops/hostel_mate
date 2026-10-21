@@ -79,21 +79,19 @@ $create_table_sql = "CREATE TABLE IF NOT EXISTS `notices` (
     `title` VARCHAR(255) NOT NULL,
     `description` TEXT NOT NULL,
     `attachment` VARCHAR(255) DEFAULT NULL,
-    `priority` VARCHAR(50) NOT NULL DEFAULT 'normal',
     `publish_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     `expires_at` DATETIME DEFAULT NULL,
     `status` VARCHAR(50) NOT NULL DEFAULT 'published',
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX `idx_status` (`status`),
-    INDEX `idx_priority` (`priority`),
     INDEX `idx_publish` (`publish_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
 
 $conn->query($create_table_sql);
 
 // Fetch Active Published Notices
-$notices_query = $conn->query("SELECT * FROM `notices` WHERE `status` = 'published' AND (`publish_at` IS NULL OR `publish_at` <= NOW()) AND (`expires_at` IS NULL OR `expires_at` >= NOW()) ORDER BY FIELD(`priority`, 'urgent', 'high', 'normal', 'low'), `created_at` DESC");
+$notices_query = $conn->query("SELECT * FROM `notices` WHERE `status` = 'published' AND (`publish_at` IS NULL OR `publish_at` <= NOW()) AND (`expires_at` IS NULL OR `expires_at` >= NOW()) ORDER BY `created_at` DESC");
 
 $notices = [];
 if ($notices_query && $notices_query->num_rows > 0) {
@@ -1091,12 +1089,6 @@ ob_start();
       <div class="notice-carousel-track" id="noticeCarouselTrack">
         
         <?php foreach ($notices as $row): 
-          $prio = strtolower($row['priority']);
-          $badge_cls = 'prio-normal';
-          if ($prio === 'urgent') $badge_cls = 'prio-urgent';
-          elseif ($prio === 'high') $badge_cls = 'prio-high';
-          elseif ($prio === 'low') $badge_cls = 'prio-low';
-
           $pub_date = date('d M, Y', strtotime($row['publish_at'] ?? $row['created_at']));
           
           // Image / attachment check
@@ -1124,7 +1116,7 @@ ob_start();
             
             <!-- Top Image Banner -->
             <div class="notice-card-img-wrapper">
-              <span class="notice-priority-badge <?= $badge_cls ?>"><?= htmlspecialchars(strtoupper($prio)) ?></span>
+              <span class="notice-priority-badge prio-normal">NOTICE</span>
               
               <?php if ($has_image): ?>
                 <img src="<?= htmlspecialchars($img_src) ?>" alt="<?= htmlspecialchars($row['title']) ?>" class="notice-card-img" />
@@ -1247,7 +1239,7 @@ ob_start();
         </div>
 
         <div class="mb-3">
-          <span id="noticeModalPriority" class="notice-priority-badge relative-badge position-static d-inline-block mb-2"></span>
+          <span id="noticeModalPriority" class="notice-priority-badge relative-badge position-static d-inline-block mb-2 prio-normal">NOTICE</span>
           <p id="noticeModalDesc" style="white-space: pre-line; font-size: 0.95rem; color: #334155; line-height: 1.6;"></p>
         </div>
 
@@ -1649,8 +1641,10 @@ function openNoticeModal(data, imgSrc) {
     document.getElementById('noticeModalDesc').innerText = data.description;
 
     const prioEl = document.getElementById('noticeModalPriority');
-    prioEl.innerText = (data.priority || 'normal').toUpperCase();
-    prioEl.className = 'notice-priority-badge ' + 'prio-' + (data.priority || 'normal').toLowerCase();
+    if (prioEl) {
+        prioEl.innerText = 'NOTICE';
+        prioEl.className = 'notice-priority-badge prio-normal relative-badge position-static d-inline-block mb-2';
+    }
 
     const imgContainer = document.getElementById('noticeModalImgContainer');
     const imgEl = document.getElementById('noticeModalImg');

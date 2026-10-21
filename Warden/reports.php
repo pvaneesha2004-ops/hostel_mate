@@ -245,10 +245,10 @@ $comp_summary_q = $conn->query("
         SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_cnt,
         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_cnt,
         SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_cnt,
-        SUM(CASE WHEN priority = 'urgent' THEN 1 ELSE 0 END) as urgent_cnt,
-        SUM(CASE WHEN priority = 'high' THEN 1 ELSE 0 END) as high_cnt,
-        SUM(CASE WHEN priority = 'medium' THEN 1 ELSE 0 END) as medium_cnt,
-        SUM(CASE WHEN priority = 'low' THEN 1 ELSE 0 END) as low_cnt
+        0 as urgent_cnt,
+        0 as high_cnt,
+        0 as medium_cnt,
+        0 as low_cnt
     FROM complaints
     WHERE DATE(created_at) BETWEEN '{$safe_start}' AND '{$safe_end}'
 ");
@@ -1460,7 +1460,6 @@ ob_start();
                       <th>Ticket ID</th>
                       <th>Resident & Room</th>
                       <th>Issue Title</th>
-                      <th class="text-center">Priority</th>
                       <th class="text-center">Status</th>
                       <th>Lodged Date</th>
                       <th>Resolution Info</th>
@@ -1480,14 +1479,6 @@ ob_start();
                         <td style="max-width: 200px;">
                           <strong class="text-dark d-block text-truncate"><?= htmlspecialchars($cl['title']) ?></strong>
                           <small class="text-muted d-block text-truncate"><?= htmlspecialchars($cl['description']) ?></small>
-                        </td>
-                        <td class="text-center">
-                          <?php 
-                            $p_class = 'badge-prio-' . strtolower($cl['priority']);
-                          ?>
-                          <span class="badge-stat-pill <?= $p_class ?>">
-                            <?= ucfirst($cl['priority']) ?>
-                          </span>
                         </td>
                         <td class="text-center">
                           <?php if ($cl['status'] === 'resolved'): ?>

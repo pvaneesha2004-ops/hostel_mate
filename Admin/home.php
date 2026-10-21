@@ -230,8 +230,7 @@ $comp_q = $conn->query("
         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_cnt,
         SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_cnt,
         SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as resolved_cnt,
-        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_cnt,
-        SUM(CASE WHEN priority IN ('urgent', 'high') AND status != 'resolved' THEN 1 ELSE 0 END) as urgent_cnt
+        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_cnt
     FROM complaints
 ");
 $comp_stats = ($comp_q && $comp_q->num_rows > 0) ? $comp_q->fetch_assoc() : [];
@@ -240,7 +239,6 @@ $comp_pending        = intval($comp_stats['pending_cnt'] ?? 0);
 $comp_in_progress    = intval($comp_stats['in_progress_cnt'] ?? 0);
 $comp_resolved       = intval($comp_stats['resolved_cnt'] ?? 0);
 $comp_rejected       = intval($comp_stats['rejected_cnt'] ?? 0);
-$comp_urgent         = intval($comp_stats['urgent_cnt'] ?? 0);
 $comp_resolution_pct = ($comp_total > 0) ? round(($comp_resolved / $comp_total) * 100, 1) : 0;
 
 // Urgent & Open Complaints (Latest 5)
@@ -257,7 +255,7 @@ $recent_complaints_res = $conn->query("
     LEFT JOIN rooms rm ON ra.room_id = rm.id
     LEFT JOIN blocks blk ON ra.block_id = blk.id
     WHERE c.status IN ('pending', 'in_progress')
-    ORDER BY FIELD(c.priority, 'urgent', 'high', 'medium', 'low'), c.created_at DESC
+    ORDER BY c.created_at DESC
     LIMIT 5
 ");
 $recent_complaints = [];
@@ -321,7 +319,7 @@ $notices_res = $conn->query("
     SELECT * 
     FROM notices 
     WHERE status = 'published' AND (publish_at IS NULL OR publish_at <= NOW()) AND (expires_at IS NULL OR expires_at >= NOW()) 
-    ORDER BY FIELD(priority, 'urgent', 'important', 'normal'), created_at DESC 
+    ORDER BY created_at DESC 
     LIMIT 3
 ");
 $active_notices = [];
@@ -765,21 +763,6 @@ ob_start();
     text-overflow: ellipsis;
   }
 
-  /* Priority Badges */
-  .badge-prio-pill {
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    padding: 0.28rem 0.6rem;
-    border-radius: 50px;
-    line-height: 1.2;
-    display: inline-block;
-  }
-
-  .badge-prio-urgent { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
-  .badge-prio-high   { background: #fff7ed; color: #c2410c; border: 1px solid #ffedd5; }
-  .badge-prio-medium { background: #fefce8; color: #a16207; border: 1px solid #fef08a; }
-  .badge-prio-low    { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
 
   /* Pulse indicator */
   .live-dot {
@@ -981,13 +964,7 @@ ob_start();
           </div>
           <div class="dash-kpi-meta">
             <span><i class="fa-solid fa-clock text-warning mr-1"></i><?= $comp_pending ?> Pending</span>
-            <?php if ($comp_urgent > 0): ?>
-              <span class="badge badge-danger text-white px-2 py-0 font-weight-700" style="font-size: 0.68rem; background: #dc2626;">
-                <i class="fa-solid fa-fire mr-1"></i><?= $comp_urgent ?> Urgent
-              </span>
-            <?php else: ?>
-              <span class="text-info font-weight-600"><?= $comp_in_progress ?> Active</span>
-            <?php endif; ?>
+            <span class="text-info font-weight-600"><?= $comp_in_progress ?> Active</span>
           </div>
         </div>
         <div class="dash-progress-track">
@@ -1245,7 +1222,7 @@ ob_start();
                   <tr>
                     <th>Student & Room</th>
                     <th>Issue</th>
-                    <th class="text-center">Priority</th>
+                    <th class="text-center">Status</th>
                     <th class="text-right">Action</th>
                   </tr>
                 </thead>
@@ -1263,12 +1240,11 @@ ob_start();
                         <small class="text-muted"><i class="fa-regular fa-clock mr-1"></i><?= date('d M, h:i A', strtotime($rc['created_at'])) ?></small>
                       </td>
                       <td class="text-center">
-                        <?php 
-                          $prio_class = 'badge-prio-' . strtolower($rc['priority']);
-                        ?>
-                        <span class="badge-prio-pill <?= $prio_class ?>">
-                          <?= htmlspecialchars(ucfirst($rc['priority'])) ?>
-                        </span>
+                        <?php if ($rc['status'] === 'in_progress'): ?>
+                          <span class="badge badge-info text-white font-weight-700 px-2 py-1" style="font-size: 0.72rem; border-radius: 50px;">In Progress</span>
+                        <?php else: ?>
+                          <span class="badge badge-warning text-dark font-weight-700 px-2 py-1" style="font-size: 0.72rem; border-radius: 50px;">Pending</span>
+                        <?php endif; ?>
                       </td>
                       <td class="text-right">
                         <a href="complaints.php" class="btn btn-sm btn-outline-primary font-weight-700 py-1 px-2 rounded-8" style="font-size: 0.74rem;">
@@ -1437,13 +1413,7 @@ ob_start();
                 <div class="notice-dash-item">
                   <div class="d-flex justify-content-between align-items-center mb-1">
                     <strong class="text-dark text-truncate mr-2" style="font-size: 0.86rem;"><?= htmlspecialchars($not['title']) ?></strong>
-                    <?php if ($not['priority'] === 'urgent'): ?>
-                      <span class="badge badge-danger text-white px-2 py-0 font-weight-700" style="font-size: 0.65rem;">URGENT</span>
-                    <?php elseif ($not['priority'] === 'important'): ?>
-                      <span class="badge badge-warning text-dark px-2 py-0 font-weight-700" style="font-size: 0.65rem;">IMPORTANT</span>
-                    <?php else: ?>
-                      <span class="badge badge-light border text-muted px-2 py-0 font-weight-600" style="font-size: 0.65rem;">NORMAL</span>
-                    <?php endif; ?>
+                    <span class="badge badge-light border text-muted px-2 py-0 font-weight-600" style="font-size: 0.65rem;">NOTICE</span>
                   </div>
                   <p class="text-muted mb-1 text-truncate" style="font-size: 0.77rem;"><?= htmlspecialchars($not['description']) ?></p>
                   <small class="text-muted font-weight-600" style="font-size: 0.72rem;">

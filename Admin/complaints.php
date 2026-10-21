@@ -15,7 +15,6 @@ require_once '../db.php';
 $start_date     = isset($_GET['start_date']) ? trim($_GET['start_date']) : '';
 $end_date       = isset($_GET['end_date']) ? trim($_GET['end_date']) : '';
 $status_filter  = isset($_GET['status']) ? strtolower(trim($_GET['status'])) : 'all';
-$priority_filter= isset($_GET['priority']) ? strtolower(trim($_GET['priority'])) : 'all';
 $block_filter   = isset($_GET['block_id']) ? intval($_GET['block_id']) : 0;
 $search_query   = isset($_GET['search']) ? trim($_GET['search']) : '';
 $preset         = isset($_GET['preset']) ? trim($_GET['preset']) : '';
@@ -45,9 +44,6 @@ if (!empty($preset)) {
             break;
         case 'pending':
             $status_filter = 'pending';
-            break;
-        case 'urgent':
-            $priority_filter = 'urgent';
             break;
         case 'all':
             $start_date = '';
@@ -81,12 +77,6 @@ if (!empty($start_date) && !empty($end_date)) {
 if (!empty($status_filter) && $status_filter !== 'all') {
     $safe_status = $conn->real_escape_string($status_filter);
     $where_clauses[] = "LOWER(c.status) = '{$safe_status}'";
-}
-
-// Priority Filter
-if (!empty($priority_filter) && $priority_filter !== 'all') {
-    $safe_prio = $conn->real_escape_string($priority_filter);
-    $where_clauses[] = "LOWER(c.priority) = '{$safe_prio}'";
 }
 
 // Block Filter
@@ -135,8 +125,7 @@ $kpi_sql = "
         SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
         SUM(CASE WHEN c.status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_count,
         SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
-        SUM(CASE WHEN c.status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count,
-        SUM(CASE WHEN c.priority IN ('high', 'urgent') AND c.status != 'resolved' THEN 1 ELSE 0 END) AS urgent_open_count
+        SUM(CASE WHEN c.status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
     FROM complaints c
     JOIN users u ON c.student_id = u.id
     LEFT JOIN room_allocations ra ON u.id = ra.student_id AND ra.status = 'active'
@@ -150,7 +139,6 @@ $stat_pending     = intval($kpi['pending_count'] ?? 0);
 $stat_in_progress = intval($kpi['in_progress_count'] ?? 0);
 $stat_resolved    = intval($kpi['resolved_count'] ?? 0);
 $stat_rejected    = intval($kpi['rejected_count'] ?? 0);
-$stat_urgent_open = intval($kpi['urgent_open_count'] ?? 0);
 $resolve_rate     = $stat_total > 0 ? round(($stat_resolved / $stat_total) * 100, 1) : 0;
 
 // Fetch Complaints Roster
@@ -279,20 +267,6 @@ ob_start();
     align-items: center;
     justify-content: center;
 }
-.priority-pill {
-    font-size: 0.72rem;
-    font-weight: 700;
-    padding: 0.28em 0.75em;
-    border-radius: 50px;
-    display: inline-flex;
-    align-items: center;
-    letter-spacing: 0.3px;
-    text-transform: uppercase;
-}
-.priority-pill-urgent { background: rgba(239, 68, 68, 0.15); color: #dc2626; border: 1px solid rgba(239, 68, 68, 0.3); }
-.priority-pill-high   { background: rgba(249, 115, 22, 0.15); color: #ea580c; border: 1px solid rgba(249, 115, 22, 0.3); }
-.priority-pill-medium { background: rgba(59, 130, 246, 0.15); color: #2563eb; border: 1px solid rgba(59, 130, 246, 0.3); }
-.priority-pill-low    { background: rgba(100, 116, 139, 0.15); color: #475569; border: 1px solid rgba(100, 116, 139, 0.3); }
 
 .c-status-pill {
     font-size: 0.76rem;
@@ -369,12 +343,11 @@ ob_start();
                     <a href="complaints.php?preset=last_7_days<?= !empty($status_filter) && $status_filter !== 'all' ? '&status=' . urlencode($status_filter) : '' ?><?= $block_filter > 0 ? '&block_id=' . $block_filter : '' ?>" class="preset-pill <?= ($preset === 'last_7_days') ? 'active' : '' ?>">Last 7 Days</a>
                     <a href="complaints.php?preset=this_month<?= !empty($status_filter) && $status_filter !== 'all' ? '&status=' . urlencode($status_filter) : '' ?><?= $block_filter > 0 ? '&block_id=' . $block_filter : '' ?>" class="preset-pill <?= ($preset === 'this_month') ? 'active' : '' ?>">This Month</a>
                     <a href="complaints.php?preset=pending" class="preset-pill <?= ($preset === 'pending' || $status_filter === 'pending') ? 'active' : '' ?>">Pending Only</a>
-                    <a href="complaints.php?preset=urgent" class="preset-pill <?= ($preset === 'urgent' || $priority_filter === 'urgent') ? 'active' : '' ?>">Urgent Only</a>
-                    <a href="complaints.php?preset=all" class="preset-pill <?= ($preset === 'all' || (empty($start_date) && empty($end_date) && $status_filter === 'all' && $priority_filter === 'all')) ? 'active' : '' ?>">All Recorded</a>
+                    <a href="complaints.php?preset=all" class="preset-pill <?= ($preset === 'all' || (empty($start_date) && empty($end_date) && $status_filter === 'all')) ? 'active' : '' ?>">All Recorded</a>
                 </div>
             </div>
 
-            <!-- Second Row: Inputs (Start Date, End Date, Status, Priority, Block, Search) -->
+            <!-- Second Row: Inputs (Start Date, End Date, Status, Filter Actions) -->
             <div class="row align-items-end">
                 <div class="col-lg-3 col-md-6 col-sm-6 mb-3 mb-lg-0">
                     <label class="filter-label"><i class="fa-regular fa-calendar-alt text-primary mr-1"></i> Start Date</label>
@@ -384,7 +357,7 @@ ob_start();
                     <label class="filter-label"><i class="fa-regular fa-calendar-alt text-primary mr-1"></i> End Date</label>
                     <input type="date" name="end_date" id="end_date" class="form-control" value="<?= htmlspecialchars($end_date) ?>" style="font-weight: 500;">
                 </div>
-                <div class="col-lg-2 col-md-4 col-sm-6 mb-3 mb-lg-0">
+                <div class="col-lg-3 col-md-6 col-sm-6 mb-3 mb-lg-0">
                     <label class="filter-label"><i class="fa-solid fa-filter text-info mr-1"></i> Status</label>
                     <select name="status" class="form-control" style="font-weight: 500;">
                         <option value="all" <?= $status_filter === 'all' ? 'selected' : '' ?>>All Statuses</option>
@@ -394,17 +367,7 @@ ob_start();
                         <option value="rejected" <?= $status_filter === 'rejected' ? 'selected' : '' ?>>Rejected</option>
                     </select>
                 </div>
-                <div class="col-lg-2 col-md-4 col-sm-6 mb-3 mb-lg-0">
-                    <label class="filter-label"><i class="fa-solid fa-triangle-exclamation text-warning mr-1"></i> Priority</label>
-                    <select name="priority" class="form-control" style="font-weight: 500;">
-                        <option value="all" <?= $priority_filter === 'all' ? 'selected' : '' ?>>All Priorities</option>
-                        <option value="urgent" <?= $priority_filter === 'urgent' ? 'selected' : '' ?>>Urgent</option>
-                        <option value="high" <?= $priority_filter === 'high' ? 'selected' : '' ?>>High</option>
-                        <option value="medium" <?= $priority_filter === 'medium' ? 'selected' : '' ?>>Medium</option>
-                        <option value="low" <?= $priority_filter === 'low' ? 'selected' : '' ?>>Low</option>
-                    </select>
-                </div>
-                <div class="col-lg-2 col-md-4 col-12 d-flex">
+                <div class="col-lg-3 col-md-6 col-12 d-flex">
                     <button type="submit" class="btn btn-primary w-100 mr-2 shadow-sm d-flex align-items-center justify-content-center" style="font-weight: 600;">
                         <i class="fa-solid fa-magnifying-glass mr-1"></i> Filter
                     </button>
@@ -436,9 +399,21 @@ ob_start();
                     <i class="fa-solid fa-hourglass-half"></i>
                 </div>
                 <div>
-                    <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Pending / In Progress</span>
-                    <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_pending + $stat_in_progress) ?></h3>
-                    <small class="text-warning font-weight-bold"><?= $stat_pending ?> Pending &bull; <?= $stat_in_progress ?> In Progress</small>
+                    <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Pending Review</span>
+                    <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_pending) ?></h3>
+                    <small class="text-warning font-weight-bold">Awaiting warden action</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6 mb-3 mb-xl-0">
+            <div class="stat-kpi-card">
+                <div class="stat-kpi-icon bg-info-soft text-info" style="background: rgba(2, 132, 199, 0.12); color: #0284c7;">
+                    <i class="fa-solid fa-screwdriver-wrench"></i>
+                </div>
+                <div>
+                    <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">In Progress</span>
+                    <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_in_progress) ?></h3>
+                    <small class="text-info font-weight-bold">Maintenance underway</small>
                 </div>
             </div>
         </div>
@@ -450,19 +425,7 @@ ob_start();
                 <div>
                     <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Resolved</span>
                     <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_resolved) ?></h3>
-                    <small class="text-success font-weight-bold"><?= $stat_total > 0 ? round(($stat_resolved / $stat_total) * 100, 1) : 0 ?>% resolved</small>
-                </div>
-            </div>
-        </div>
-        <div class="col-xl-3 col-md-6 mb-3 mb-xl-0">
-            <div class="stat-kpi-card">
-                <div class="stat-kpi-icon bg-danger-soft text-danger">
-                    <i class="fa-solid fa-fire-flame-curved"></i>
-                </div>
-                <div>
-                    <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Urgent Unresolved</span>
-                    <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_urgent_open) ?></h3>
-                    <small class="text-danger font-weight-bold"><?= $stat_rejected ?> rejected</small>
+                    <small class="text-success font-weight-bold"><?= $stat_rejected ?> rejected</small>
                 </div>
             </div>
         </div>
@@ -487,7 +450,6 @@ ob_start();
                             <th style="width: 50px;">#</th>
                             <th>Resident Student</th>
                             <th>Complaint Title & Category</th>
-                            <th>Priority</th>
                             <th>Date Filed</th>
                             <th>Status</th>
                             <th>Assigned Warden</th>
@@ -497,17 +459,11 @@ ob_start();
                     <tbody>
                         <?php foreach ($complaints_list as $idx => $row): 
                             $status = strtolower($row['status'] ?? 'pending');
-                                $prio   = strtolower($row['priority'] ?? 'medium');
 
                                 $status_badge_class = 'c-status-pending';
                                 if ($status === 'in_progress') $status_badge_class = 'c-status-in_progress';
                                 elseif ($status === 'resolved') $status_badge_class = 'c-status-resolved';
                                 elseif ($status === 'rejected') $status_badge_class = 'c-status-rejected';
-
-                                $prio_badge_class = 'priority-pill-medium';
-                                if ($prio === 'urgent') $prio_badge_class = 'priority-pill-urgent';
-                                elseif ($prio === 'high') $prio_badge_class = 'priority-pill-high';
-                                elseif ($prio === 'low') $prio_badge_class = 'priority-pill-low';
 
                                 $first_letter = !empty($row['student_name']) ? strtoupper(substr($row['student_name'], 0, 1)) : 'S';
                             ?>
@@ -539,11 +495,7 @@ ob_start();
                                             <?= htmlspecialchars(strip_tags($row['description'])) ?>
                                         </small>
                                     </td>
-                                    <td>
-                                        <span class="priority-pill <?= $prio_badge_class ?>">
-                                            <i class="fa-solid fa-flag mr-1" style="font-size: 0.62rem;"></i> <?= ucfirst($prio) ?>
-                                        </span>
-                                    </td>
+
                                     <td>
                                         <div class="font-weight-bold text-dark" style="font-size: 0.88rem;">
                                             <?= date('d M, Y', strtotime($row['created_at'])) ?>
@@ -571,8 +523,6 @@ ob_start();
                                             data-title="<?= htmlspecialchars($row['title']) ?>"
                                             data-desc="<?= htmlspecialchars($row['description']) ?>"
                                             data-image="<?= !empty($row['image']) ? '../complaints/' . htmlspecialchars($row['image']) : '' ?>"
-                                            data-prio="<?= ucfirst($prio) ?>"
-                                            data-prio-class="<?= $prio_badge_class ?>"
                                             data-status="<?= ucfirst(str_replace('_', ' ', $status)) ?>"
                                             data-status-class="<?= $status_badge_class ?>"
                                             data-student="<?= htmlspecialchars($row['student_name'] ?? 'Unknown') ?>"
@@ -609,7 +559,7 @@ ob_start();
                 </button>
             </div>
             <div class="modal-body p-4">
-                <!-- Resident & Priority Pill Row -->
+                <!-- Resident & Status Pill Row -->
                 <div class="d-flex flex-wrap justify-content-between align-items-center p-3 mb-4 rounded-14" style="background: rgba(37, 99, 235, 0.05); border: 1px solid rgba(37, 99, 235, 0.15);">
                     <div class="d-flex align-items-center mb-2 mb-md-0">
                         <div class="stat-icon-shape rounded-12 bg-primary text-white mr-3" style="width: 46px; height: 46px;">
@@ -622,7 +572,6 @@ ob_start();
                         </div>
                     </div>
                     <div class="text-md-right">
-                        <span id="modalPrioBadge" class="priority-pill priority-pill-medium mr-1">Medium</span>
                         <span id="modalStatusBadge" class="c-status-pill c-status-pending font-weight-bold">Pending</span>
                     </div>
                 </div>
@@ -684,7 +633,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 responsive: true,
                 pageLength: 25,
                 lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
-                columnDefs: [{ targets: [7], orderable: false }],
+                columnDefs: [{ targets: [6], orderable: false }],
                 language: {
                     search: "_INPUT_",
                     searchPlaceholder: "Search complaints...",
@@ -705,7 +654,6 @@ document.addEventListener("DOMContentLoaded", function () {
         $('#modalRoomInfo').text(btn.data('room'));
         $('#modalStudentContact').text('Phone: ' + btn.data('phone') + ' | Email: ' + btn.data('email'));
         
-        $('#modalPrioBadge').attr('class', 'priority-pill ' + btn.data('prio-class')).text(btn.data('prio'));
         $('#modalStatusBadge').attr('class', 'c-status-pill ' + btn.data('status-class')).text(btn.data('status'));
 
         $('#modalTitle').text(btn.data('title'));

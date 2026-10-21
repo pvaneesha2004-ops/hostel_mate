@@ -273,10 +273,10 @@ $comp_kpi_q = $conn->query("
         SUM(CASE WHEN LOWER(c.status) = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_cnt,
         SUM(CASE WHEN LOWER(c.status) = 'pending' THEN 1 ELSE 0 END) AS pending_cnt,
         SUM(CASE WHEN LOWER(c.status) = 'rejected' THEN 1 ELSE 0 END) AS rejected_cnt,
-        SUM(CASE WHEN LOWER(c.priority) = 'urgent' THEN 1 ELSE 0 END) AS urgent_cnt,
-        SUM(CASE WHEN LOWER(c.priority) = 'high' THEN 1 ELSE 0 END) AS high_cnt,
-        SUM(CASE WHEN LOWER(c.priority) = 'medium' THEN 1 ELSE 0 END) AS medium_cnt,
-        SUM(CASE WHEN LOWER(c.priority) = 'low' THEN 1 ELSE 0 END) AS low_cnt
+        0 AS urgent_cnt,
+        0 AS high_cnt,
+        0 AS medium_cnt,
+        0 AS low_cnt
     FROM complaints c
     JOIN users u ON c.student_id = u.id
     LEFT JOIN room_allocations ra ON u.id = ra.student_id AND ra.status = 'active'
@@ -1026,7 +1026,6 @@ ob_start();
                                     <th>#</th>
                                     <th>Resident Student</th>
                                     <th>Issue Title</th>
-                                    <th>Priority</th>
                                     <th>Date Filed</th>
                                     <th>Status</th>
                                     <th>Assigned Warden</th>
@@ -1035,7 +1034,6 @@ ob_start();
                             <tbody>
                                 <?php foreach ($comp_audit_list as $row): 
                                     $c_st = strtolower($row['status'] ?? 'pending');
-                                    $c_prio = strtolower($row['priority'] ?? 'medium');
                                     $badge_class = 'badge-warning-soft';
                                     if ($c_st === 'resolved') $badge_class = 'badge-success-soft';
                                     elseif ($c_st === 'in_progress') $badge_class = 'badge-primary-soft';
@@ -1050,11 +1048,6 @@ ob_start();
                                         <td>
                                             <div class="font-weight-bold text-dark"><?= htmlspecialchars($row['title']) ?></div>
                                             <small class="text-muted"><?= htmlspecialchars(substr(strip_tags($row['description']), 0, 50)) ?>...</small>
-                                        </td>
-                                        <td>
-                                            <span class="badge badge-secondary py-1 px-2 font-weight-bold text-uppercase" style="font-size: 0.72rem;">
-                                                <?= ucfirst($c_prio) ?>
-                                            </span>
                                         </td>
                                         <td><?= date('d M Y', strtotime($row['created_at'])) ?></td>
                                         <td>

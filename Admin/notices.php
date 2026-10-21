@@ -16,7 +16,6 @@ $admin_id = $_SESSION['admin_id'] ?? 1;
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action'])) {
     $title = trim($_POST['title'] ?? '');
     $description = trim($_POST['description'] ?? '');
-    $priority = $_POST['priority'] ?? 'normal';
     $status = $_POST['status'] ?? 'published';
     
     // Format dates for MySQL
@@ -40,8 +39,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action'])) {
     }
 
     if ($_POST['action'] == 'add') {
-        $stmt = $conn->prepare("INSERT INTO notices (created_by, title, description, attachment, priority, publish_at, expires_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())");
-        $stmt->bind_param("isssssss", $admin_id, $title, $description, $attachment, $priority, $publish_at, $expires_at, $status);
+        $stmt = $conn->prepare("INSERT INTO notices (created_by, title, description, attachment, publish_at, expires_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())");
+        $stmt->bind_param("issssss", $admin_id, $title, $description, $attachment, $publish_at, $expires_at, $status);
         if ($stmt->execute()) {
             $_SESSION['msg'] = "Notice added successfully.";
         } else {
@@ -58,8 +57,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action'])) {
             $attachment = $current_data['attachment'] ?? '';
         }
 
-        $stmt = $conn->prepare("UPDATE notices SET title=?, description=?, attachment=?, priority=?, publish_at=?, expires_at=?, status=?, updated_at=NOW() WHERE id=?");
-        $stmt->bind_param("sssssssi", $title, $description, $attachment, $priority, $publish_at, $expires_at, $status, $id);
+        $stmt = $conn->prepare("UPDATE notices SET title=?, description=?, attachment=?, publish_at=?, expires_at=?, status=?, updated_at=NOW() WHERE id=?");
+        $stmt->bind_param("ssssssi", $title, $description, $attachment, $publish_at, $expires_at, $status, $id);
         if ($stmt->execute()) {
             $_SESSION['msg'] = "Notice updated successfully.";
         } else {
@@ -133,7 +132,6 @@ ob_start();
                             <tr>
                                 <th>SlNo</th>
                                 <th>Title</th>
-                                <th>Priority</th>
                                 <th>Publish Date</th>
                                 <th>Expire Date</th>
                                 <th>Attachment</th>
@@ -148,18 +146,6 @@ ob_start();
                                 <td>
                                     <span class="font-weight-bold d-block"><?= htmlspecialchars($row['title']) ?></span>
                                     <small class="text-muted d-block" style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><?= htmlspecialchars($row['description']) ?></small>
-                                </td>
-                                <td>
-                                    <?php 
-                                        $p = strtolower($row['priority']);
-                                        if($p == 'urgent') {
-                                            echo '<span class="badge badge-danger">Urgent</span>';
-                                        } elseif($p == 'important') {
-                                            echo '<span class="badge badge-warning">Important</span>';
-                                        } else {
-                                            echo '<span class="badge badge-info">Normal</span>';
-                                        }
-                                    ?>
                                 </td>
                                 <td><small><?= date('M d, Y', strtotime($row['publish_at'])) ?></small></td>
                                 <td><small><?= date('M d, Y', strtotime($row['expires_at'])) ?></small></td>
@@ -190,7 +176,6 @@ ob_start();
                                         data-id="<?= $row['id'] ?>"
                                         data-title="<?= htmlspecialchars($row['title']) ?>"
                                         data-description="<?= htmlspecialchars($row['description']) ?>"
-                                        data-priority="<?= htmlspecialchars($row['priority']) ?>"
                                         data-publish_at="<?= date('d M Y', strtotime($row['publish_at'])) ?>"
                                         data-expires_at="<?= date('d M Y', strtotime($row['expires_at'])) ?>"
                                         data-status="<?= htmlspecialchars($row['status']) ?>"
@@ -203,7 +188,6 @@ ob_start();
                                         data-id="<?= $row['id'] ?>"
                                         data-title="<?= htmlspecialchars($row['title']) ?>"
                                         data-description="<?= htmlspecialchars($row['description']) ?>"
-                                        data-priority="<?= htmlspecialchars($row['priority']) ?>"
                                         data-publish_at="<?= date('Y-m-d', strtotime($row['publish_at'])) ?>"
                                         data-expires_at="<?= date('Y-m-d', strtotime($row['expires_at'])) ?>"
                                         data-status="<?= htmlspecialchars($row['status']) ?>"
@@ -238,7 +222,6 @@ ob_start();
             <div class="p-3 mb-3 bg-white rounded-12 shadow-sm border">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                     <h4 class="font-weight-bold text-dark mb-0" id="view_notice_title"></h4>
-                    <span id="view_notice_priority_badge"></span>
                 </div>
                 <div class="d-flex flex-wrap text-muted small mt-2">
                     <span class="mr-3"><i class="ti-calendar mr-1 text-primary"></i>Published: <strong id="view_notice_publish_date" class="text-dark"></strong></span>
@@ -294,16 +277,6 @@ ob_start();
                 <label>Notice Title <span class="text-danger">*</span></label>
                 <input type="text" name="title" id="add_title" class="form-control" placeholder="e.g. Hostel Maintenance Notice">
                 <small class="text-danger" id="add_title_err"></small>
-            </div>
-            <div class="form-group">
-                <label>Priority <span class="text-danger">*</span></label>
-                <select name="priority" id="add_priority" class="form-control">
-                    <option value="">Select Priority</option>
-                    <option value="normal">Normal</option>
-                    <option value="important">Important</option>
-                    <option value="urgent">Urgent</option>
-                </select>
-                <small class="text-danger" id="add_priority_err"></small>
             </div>
             <div class="form-group">
                 <label>Status <span class="text-danger">*</span></label>
@@ -366,16 +339,6 @@ ob_start();
                 <small class="text-danger" id="edit_title_err"></small>
             </div>
             <div class="form-group">
-                <label>Priority <span class="text-danger">*</span></label>
-                <select name="priority" id="edit_priority" class="form-control">
-                    <option value="">Select Priority</option>
-                    <option value="normal">Normal</option>
-                    <option value="important">Important</option>
-                    <option value="urgent">Urgent</option>
-                </select>
-                <small class="text-danger" id="edit_priority_err"></small>
-            </div>
-            <div class="form-group">
                 <label>Status <span class="text-danger">*</span></label>
                 <select name="status" id="edit_status" class="form-control">
                     <option value="">Select Status</option>
@@ -422,7 +385,6 @@ document.addEventListener("DOMContentLoaded", function() {
     $(document).on('click', '.view-notice-btn', function() {
         var title = $(this).data('title');
         var description = $(this).data('description');
-        var priority = $(this).data('priority');
         var publishAt = $(this).data('publish_at');
         var expiresAt = $(this).data('expires_at');
         var status = $(this).data('status');
@@ -434,15 +396,6 @@ document.addEventListener("DOMContentLoaded", function() {
         $('#view_notice_publish_date').text(publishAt);
         $('#view_notice_expire_date').text(expiresAt);
         $('#view_notice_created_at').text(createdAt);
-
-        var p = (priority || 'normal').toLowerCase();
-        if (p === 'urgent') {
-            $('#view_notice_priority_badge').html('<span class="badge badge-danger px-3 py-1"><i class="ti-alert mr-1"></i>Urgent Priority</span>');
-        } else if (p === 'important') {
-            $('#view_notice_priority_badge').html('<span class="badge badge-warning text-dark px-3 py-1"><i class="ti-star mr-1"></i>Important</span>');
-        } else {
-            $('#view_notice_priority_badge').html('<span class="badge badge-info px-3 py-1"><i class="ti-info mr-1"></i>Normal</span>');
-        }
 
         var s = (status || 'published').toLowerCase();
         if (s === 'published') {
@@ -471,7 +424,6 @@ document.addEventListener("DOMContentLoaded", function() {
         var id = $(this).data('id');
         var title = $(this).data('title');
         var description = $(this).data('description');
-        var priority = $(this).data('priority');
         var publishAt = $(this).data('publish_at');
         var expiresAt = $(this).data('expires_at');
         var status = $(this).data('status');
@@ -480,7 +432,6 @@ document.addEventListener("DOMContentLoaded", function() {
         $('#edit_id').val(id);
         $('#edit_title').val(title);
         $('#edit_description').val(description);
-        $('#edit_priority').val(priority);
         $('#edit_publish_at').val(publishAt);
         $('#edit_expires_at').val(expiresAt);
         $('#edit_status').val(status);
@@ -493,7 +444,6 @@ document.addEventListener("DOMContentLoaded", function() {
 
         // Clear previous errors
         $('#edit_title_err').text('');
-        $('#edit_priority_err').text('');
         $('#edit_status_err').text('');
         $('#edit_publish_at_err').text('');
         $('#edit_expires_at_err').text('');
@@ -504,7 +454,6 @@ document.addEventListener("DOMContentLoaded", function() {
     // Clear add form errors on modal open
     $('#addModal').on('show.bs.modal', function () {
         $('#add_title_err').text('');
-        $('#add_priority_err').text('');
         $('#add_status_err').text('');
         $('#add_publish_at_err').text('');
         $('#add_expires_at_err').text('');
@@ -517,7 +466,6 @@ document.addEventListener("DOMContentLoaded", function() {
     $('#addNoticeForm').on('submit', function(e) {
         let valid = true;
         let title = $('#add_title').val().trim();
-        let priority = $('#add_priority').val().trim();
         let status = $('#add_status').val().trim();
         let publish_at = $('#add_publish_at').val().trim();
         let expires_at = $('#add_expires_at').val().trim();
@@ -529,13 +477,6 @@ document.addEventListener("DOMContentLoaded", function() {
             valid = false;
         } else {
             $('#add_title_err').text('');
-        }
-
-        if (priority === '') {
-            $('#add_priority_err').text('Priority selection is mandatory');
-            valid = false;
-        } else {
-            $('#add_priority_err').text('');
         }
 
         if (status === '') {
@@ -582,7 +523,6 @@ document.addEventListener("DOMContentLoaded", function() {
     $('#editNoticeForm').on('submit', function(e) {
         let valid = true;
         let title = $('#edit_title').val().trim();
-        let priority = $('#edit_priority').val().trim();
         let status = $('#edit_status').val().trim();
         let publish_at = $('#edit_publish_at').val().trim();
         let expires_at = $('#edit_expires_at').val().trim();
@@ -595,13 +535,6 @@ document.addEventListener("DOMContentLoaded", function() {
             valid = false;
         } else {
             $('#edit_title_err').text('');
-        }
-
-        if (priority === '') {
-            $('#edit_priority_err').text('Priority selection is mandatory');
-            valid = false;
-        } else {
-            $('#edit_priority_err').text('');
         }
 
         if (status === '') {
