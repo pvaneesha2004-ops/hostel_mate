@@ -761,6 +761,12 @@ $current_page = basename($_SERVER['PHP_SELF']);
             <a class="dropdown-item custom-dropdown-item" href="profile.php">
               <i class="fa-solid fa-door-open"></i> Room Details
             </a>
+            <a class="dropdown-item custom-dropdown-item" href="leave_requests.php">
+              <i class="fa-solid fa-person-walking-arrow-right text-primary"></i> Leave Requests
+            </a>
+            <a class="dropdown-item custom-dropdown-item" href="outing_requests.php">
+              <i class="fa-solid fa-person-walking-luggage text-success"></i> Outing Requests
+            </a>
             <a class="dropdown-item custom-dropdown-item" href="profile.php">
               <i class="fa-solid fa-receipt"></i> Fee Receipts
             </a>
@@ -799,6 +805,18 @@ $current_page = basename($_SERVER['PHP_SELF']);
       <a href="attendance.php" class="bottom-nav-item <?php echo ($current_page == 'attendance.php') ? 'active' : ''; ?>">
         <i class="fa-solid fa-clipboard-user"></i>
         <span>Attendance</span>
+      </a>
+
+      <!-- Leave Requests -->
+      <a href="leave_requests.php" class="bottom-nav-item <?php echo ($current_page == 'leave_requests.php') ? 'active' : ''; ?>">
+        <i class="fa-solid fa-person-walking-arrow-right"></i>
+        <span>Leaves</span>
+      </a>
+
+      <!-- Outing Requests -->
+      <a href="outing_requests.php" class="bottom-nav-item <?php echo ($current_page == 'outing_requests.php') ? 'active' : ''; ?>">
+        <i class="fa-solid fa-person-walking-luggage"></i>
+        <span>Outing</span>
       </a>
 
       <!-- Food Menu -->

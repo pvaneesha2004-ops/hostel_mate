@@ -46,12 +46,21 @@ if (!empty($preset)) {
             $start_date = date('Y-m-d', strtotime('-29 days'));
             $end_date   = date('Y-m-d');
             break;
+        case 'absent':
+            $start_date = '';
+            $end_date   = '';
+            $status_filter = 'absent';
+            break;
         case 'all':
             $start_date = '';
             $end_date   = '';
             break;
     }
 }
+
+// Fetch overall hostel absent count for quick badge display
+$all_absent_cnt_res = $conn->query("SELECT COUNT(*) AS cnt FROM attendance a JOIN users u ON a.student_id = u.id WHERE u.role = 'student' AND LOWER(a.status) = 'absent'");
+$total_all_absent = ($all_absent_cnt_res && $row = $all_absent_cnt_res->fetch_assoc()) ? intval($row['cnt']) : 0;
 
 // Build SQL WHERE Conditions
 $where_clauses = ["u.role = 'student'"];
@@ -355,7 +364,10 @@ ob_start();
                     <a href="attendance.php?preset=last_7_days<?= !empty($status_filter) && $status_filter !== 'all' ? '&status=' . urlencode($status_filter) : '' ?><?= $block_filter > 0 ? '&block_id=' . $block_filter : '' ?>" class="preset-pill <?= ($preset === 'last_7_days') ? 'active' : '' ?>">Last 7 Days</a>
                     <a href="attendance.php?preset=this_month<?= !empty($status_filter) && $status_filter !== 'all' ? '&status=' . urlencode($status_filter) : '' ?><?= $block_filter > 0 ? '&block_id=' . $block_filter : '' ?>" class="preset-pill <?= ($preset === 'this_month') ? 'active' : '' ?>">This Month</a>
                     <a href="attendance.php?preset=last_30_days<?= !empty($status_filter) && $status_filter !== 'all' ? '&status=' . urlencode($status_filter) : '' ?><?= $block_filter > 0 ? '&block_id=' . $block_filter : '' ?>" class="preset-pill <?= ($preset === 'last_30_days') ? 'active' : '' ?>">Last 30 Days</a>
-                    <a href="attendance.php?preset=all<?= !empty($status_filter) && $status_filter !== 'all' ? '&status=' . urlencode($status_filter) : '' ?><?= $block_filter > 0 ? '&block_id=' . $block_filter : '' ?>" class="preset-pill <?= ($preset === 'all' || (empty($start_date) && empty($end_date))) ? 'active' : '' ?>">All Recorded</a>
+                    <a href="attendance.php?preset=absent" class="preset-pill <?= ($status_filter === 'absent' && empty($start_date) && empty($end_date)) ? 'active' : '' ?>" style="background: #fee2e2; color: #dc2626; border-color: #fca5a5; font-weight: 700;">
+                        <i class="fa-solid fa-circle-xmark mr-1"></i> Absent Data (<?= $total_all_absent ?>)
+                    </a>
+                    <a href="attendance.php?preset=all<?= !empty($status_filter) && $status_filter !== 'all' ? '&status=' . urlencode($status_filter) : '' ?><?= $block_filter > 0 ? '&block_id=' . $block_filter : '' ?>" class="preset-pill <?= ($preset === 'all' || (empty($start_date) && empty($end_date) && $status_filter !== 'absent')) ? 'active' : '' ?>">All Recorded</a>
                 </div>
             </div>
 
@@ -403,55 +415,65 @@ ob_start();
         </form>
     </div>
 
-    <!-- Summary KPI Cards -->
+    <!-- Summary KPI Cards (Interactive Filter Links) -->
     <div class="row mb-4">
         <div class="col-xl-3 col-md-6 mb-3 mb-xl-0">
-            <div class="stat-kpi-card">
-                <div class="stat-kpi-icon bg-primary-soft text-primary">
-                    <i class="fa-solid fa-users"></i>
+            <a href="attendance.php?status=all" class="text-decoration-none d-block h-100">
+                <div class="stat-kpi-card <?= ($status_filter === 'all') ? 'border-primary' : '' ?>">
+                    <div class="stat-kpi-icon bg-primary-soft text-primary">
+                        <i class="fa-solid fa-users"></i>
+                    </div>
+                    <div>
+                        <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Total Records</span>
+                        <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_total) ?></h3>
+                        <small class="text-primary font-weight-bold"><?= $present_pct ?>% Attendance Rate</small>
+                    </div>
                 </div>
-                <div>
-                    <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Total Records</span>
-                    <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_total) ?></h3>
-                    <small class="text-primary font-weight-bold"><?= $present_pct ?>% Attendance Rate</small>
-                </div>
-            </div>
+            </a>
         </div>
         <div class="col-xl-3 col-md-6 mb-3 mb-xl-0">
-            <div class="stat-kpi-card">
-                <div class="stat-kpi-icon bg-success-soft text-success">
-                    <i class="fa-solid fa-circle-check"></i>
+            <a href="attendance.php?status=present<?= !empty($start_date) ? '&start_date=' . urlencode($start_date) . '&end_date=' . urlencode($end_date) : '' ?>" class="text-decoration-none d-block h-100">
+                <div class="stat-kpi-card <?= ($status_filter === 'present') ? 'border-success' : '' ?>">
+                    <div class="stat-kpi-icon bg-success-soft text-success">
+                        <i class="fa-solid fa-circle-check"></i>
+                    </div>
+                    <div>
+                        <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Present</span>
+                        <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_present) ?></h3>
+                        <small class="text-success font-weight-bold"><?= $stat_total > 0 ? round(($stat_present / $stat_total) * 100, 1) : 0 ?>% of logged</small>
+                    </div>
                 </div>
-                <div>
-                    <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Present</span>
-                    <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_present) ?></h3>
-                    <small class="text-success font-weight-bold"><?= $stat_total > 0 ? round(($stat_present / $stat_total) * 100, 1) : 0 ?>% of logged</small>
-                </div>
-            </div>
+            </a>
         </div>
         <div class="col-xl-3 col-md-6 mb-3 mb-xl-0">
-            <div class="stat-kpi-card">
-                <div class="stat-kpi-icon bg-danger-soft text-danger">
-                    <i class="fa-solid fa-circle-xmark"></i>
+            <a href="attendance.php?status=absent<?= !empty($start_date) ? '&start_date=' . urlencode($start_date) . '&end_date=' . urlencode($end_date) : '' ?>" class="text-decoration-none d-block h-100">
+                <div class="stat-kpi-card <?= ($status_filter === 'absent') ? 'border-danger' : '' ?>" style="<?= ($stat_absent > 0) ? 'background: #fff8f8; border: 1.5px solid #fecaca;' : '' ?>">
+                    <div class="stat-kpi-icon bg-danger-soft text-danger" style="box-shadow: 0 4px 10px rgba(220,38,38,0.2);">
+                        <i class="fa-solid fa-circle-xmark"></i>
+                    </div>
+                    <div>
+                        <span class="text-danger font-weight-700 d-block" style="font-size: 0.82rem; text-transform: uppercase;">
+                            <i class="fa-solid fa-circle-exclamation mr-1"></i>Absent Data
+                        </span>
+                        <h3 class="font-weight-bold text-danger mb-0"><?= number_format($stat_absent) ?></h3>
+                        <small class="text-danger font-weight-bold">Click to view absent list &rarr;</small>
+                    </div>
                 </div>
-                <div>
-                    <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Absent</span>
-                    <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_absent) ?></h3>
-                    <small class="text-danger font-weight-bold"><?= $stat_total > 0 ? round(($stat_absent / $stat_total) * 100, 1) : 0 ?>% of logged</small>
-                </div>
-            </div>
+            </a>
         </div>
         <div class="col-xl-3 col-md-6 mb-3 mb-xl-0">
-            <div class="stat-kpi-card">
-                <div class="stat-kpi-icon bg-warning-soft text-warning">
-                    <i class="fa-solid fa-clock"></i>
+            <a href="attendance.php?status=leave<?= !empty($start_date) ? '&start_date=' . urlencode($start_date) . '&end_date=' . urlencode($end_date) : '' ?>" class="text-decoration-none d-block h-100">
+                <div class="stat-kpi-card <?= (in_array($status_filter, ['late', 'leave', 'outing'])) ? 'border-warning' : '' ?>">
+                    <div class="stat-kpi-icon bg-warning-soft text-warning">
+                        <i class="fa-solid fa-clock"></i>
+                    </div>
+                    <div>
+                        <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Late / Leave / Outing</span>
+                        <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_late + $stat_leave) ?></h3>
+                        <small class="text-warning font-weight-bold"><?= $stat_late ?> Late &bull; <?= $stat_leave ?> Leave/Out</small>
+                    </div>
                 </div>
-                <div>
-                    <span class="text-muted d-block" style="font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Late / Leave / Outing</span>
-                    <h3 class="font-weight-bold text-dark mb-0"><?= number_format($stat_late + $stat_leave) ?></h3>
-                    <small class="text-warning font-weight-bold"><?= $stat_late ?> Late &bull; <?= $stat_leave ?> Leave/Out</small>
-                </div>
-            </div>
+            </a>
         </div>
     </div>
 
@@ -546,6 +568,11 @@ ob_start();
                                         <span class="status-pill <?= $pill_class ?>">
                                             <i class="<?= $icon_class ?>"></i> <?= ucfirst($status) ?>
                                         </span>
+                                        <?php if ($status === 'absent' && stripos($row['remarks'] ?? '', 'Leave') !== false): ?>
+                                            <small class="badge badge-light border text-danger d-block mt-1 font-weight-bold px-2 py-0" style="font-size: 0.7rem; border-radius: 6px;">
+                                                <i class="fa-solid fa-file-shield mr-1"></i>Approved Leave
+                                            </small>
+                                        <?php endif; ?>
                                     </td>
                                     <td>
                                         <div class="text-dark font-weight-medium" style="font-size: 0.86rem;">

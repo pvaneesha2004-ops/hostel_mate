@@ -31,6 +31,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $role = 'student';
     $status = 'inactive';
 
+    // Room preference data (Optional)
+    $room_type = trim($_POST['room_type'] ?? '');
+    $language = trim($_POST['language'] ?? '');
+    $floor_type = trim($_POST['floor_type'] ?? '');
+
+    // If single room type is selected, do not fill language / roommate preference
+    if ($room_type === 'single') {
+        $language = '';
+    }
+
+    $room_type_val = !empty($room_type) ? $room_type : NULL;
+    $language_val = !empty($language) ? $language : NULL;
+    $floor_type_val = !empty($floor_type) ? $floor_type : NULL;
+
     // 2. Guardian data
     $g_name = trim($_POST['guardian_name'] ?? '');
     $g_relationship = trim($_POST['guardian_relationship'] ?? '');
@@ -80,12 +94,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
+                // Receipt File Upload (users table `receipt` - image and file formats allowed)
+                $receipt_file = '';
+                if (isset($_FILES['receipt']) && $_FILES['receipt']['error'] == UPLOAD_ERR_OK) {
+                    $ext = strtolower(pathinfo($_FILES['receipt']['name'], PATHINFO_EXTENSION));
+                    if (in_array($ext, ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'gif', 'webp'])) {
+                        $receipt_file = 'receipt_' . time() . '_' . rand(1000, 9999) . '.' . $ext;
+                        move_uploaded_file($_FILES['receipt']['tmp_name'], $doc_dir . $receipt_file);
+                    }
+                }
+
+                $receipt_val = !empty($receipt_file) ? $receipt_file : NULL;
                 $password_hash = password_hash($password, PASSWORD_BCRYPT);
 
-                // Insert into `users` table with status 'inactive'
-                $stmt = $conn->prepare("INSERT INTO users (role, name, email, phone, password, profile_image, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())");
+                // Insert into `users` table with status 'inactive', including optional room preferences and receipt
+                $stmt = $conn->prepare("INSERT INTO users (role, name, email, phone, password, profile_image, status, room_type, language, floor_type, receipt, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())");
                 if ($stmt) {
-                    $stmt->bind_param("sssssss", $role, $name, $email, $phone, $password_hash, $profile_image, $status);
+                    $stmt->bind_param("sssssssssss", $role, $name, $email, $phone, $password_hash, $profile_image, $status, $room_type_val, $language_val, $floor_type_val, $receipt_val);
                     if ($stmt->execute()) {
                         $student_id = $conn->insert_id;
 
@@ -631,10 +656,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
         <!-- =========================================================
-             SECTION 2: GUARDIAN DETAILS
+             SECTION 2: ROOM & ACCOMMODATION PREFERENCES (OPTIONAL)
              ========================================================= -->
         <div class="form-section-divider">
           <span class="section-number-badge">2</span>
+          <div class="d-flex align-items-center justify-content-between w-100 pr-1">
+            <h6 class="section-title mb-0">Room & Sharing Preferences</h6>
+            <span class="badge badge-light border text-muted" style="font-size: 0.72rem; font-weight: 600; border-radius: 6px;">Optional</span>
+          </div>
+        </div>
+
+        <!-- Room Type and Floor Type Row -->
+        <div class="form-row mb-3">
+          <!-- Room Type (`room_type`) -->
+          <div class="col-md-6 form-group mb-3 mb-md-0">
+            <label for="roomType">Preferred Room Type</label>
+            <div class="input-wrapper">
+              <select class="form-control-modern" id="roomType" name="room_type" style="padding-left: 2.65rem;">
+                <option value="">Select Room Type (Optional)</option>
+                <option value="single" <?php echo (($_POST['room_type'] ?? '') === 'single') ? 'selected' : ''; ?>>Single</option>
+                <option value="double" <?php echo (($_POST['room_type'] ?? '') === 'double') ? 'selected' : ''; ?>>Double</option>
+                <option value="thriple" <?php echo (($_POST['room_type'] ?? '') === 'thriple') ? 'selected' : ''; ?>>Thriple</option>
+              </select>
+              <i class="fa-solid fa-bed input-icon"></i>
+            </div>
+          </div>
+
+          <!-- Floor Type (`floor_type`) -->
+          <div class="col-md-6 form-group mb-0">
+            <label for="floorType">Preferred Floor</label>
+            <div class="input-wrapper">
+              <select class="form-control-modern" id="floorType" name="floor_type" style="padding-left: 2.65rem;">
+                <option value="">Select Floor (Optional)</option>
+                <option value="ground" <?php echo (($_POST['floor_type'] ?? '') === 'ground') ? 'selected' : ''; ?>>Ground</option>
+                <option value="1st" <?php echo (($_POST['floor_type'] ?? '') === '1st') ? 'selected' : ''; ?>>1st</option>
+                <option value="2nd" <?php echo (($_POST['floor_type'] ?? '') === '2nd') ? 'selected' : ''; ?>>2nd</option>
+              </select>
+              <i class="fa-solid fa-layer-group input-icon"></i>
+            </div>
+          </div>
+        </div>
+
+        <!-- Roommate Language Preference (`language`) -->
+        <div class="form-group mb-3" id="languageFieldGroup">
+          <label for="preferredLanguage">
+            <span>Roommate Language Preference</span>
+            <span class="badge badge-light border text-muted px-2" id="languageSingleBadge" style="font-size: 0.72rem; display: none;">Not applicable for Single</span>
+          </label>
+          <div class="input-wrapper">
+            <select class="form-control-modern" id="preferredLanguage" name="language" style="padding-left: 2.65rem;">
+              <option value="">Select Language Preference (Optional)</option>
+              <option value="malayalam" <?php echo (($_POST['language'] ?? '') === 'malayalam') ? 'selected' : ''; ?>>Malayalam</option>
+              <option value="english" <?php echo (($_POST['language'] ?? '') === 'english') ? 'selected' : ''; ?>>English</option>
+              <option value="hindi" <?php echo (($_POST['language'] ?? '') === 'hindi') ? 'selected' : ''; ?>>Hindi</option>
+              <option value="all laguage set" <?php echo (($_POST['language'] ?? '') === 'all laguage set') ? 'selected' : ''; ?>>All Language Set</option>
+            </select>
+            <i class="fa-solid fa-language input-icon"></i>
+          </div>
+          <small class="form-text text-muted mt-1" id="languageHint">
+            <i class="fa-solid fa-circle-info mr-1 text-primary"></i> Helps match roommates by preferred language for Double / Thriple sharing.
+          </small>
+        </div>
+
+        <!-- =========================================================
+             SECTION 3: GUARDIAN DETAILS
+             ========================================================= -->
+        <div class="form-section-divider">
+          <span class="section-number-badge">3</span>
           <h6 class="section-title">Parent / Guardian Information</h6>
         </div>
 
@@ -731,10 +819,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
         <!-- =========================================================
-             SECTION 3: Document & Verification 
+             SECTION 4: Document & Verification 
              ========================================================= -->
         <div class="form-section-divider">
-          <span class="section-number-badge">3</span>
+          <span class="section-number-badge">4</span>
           <h6 class="section-title">Document & Verification</h6>
         </div>
 
@@ -745,7 +833,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="input-wrapper">
               <select class="form-control-modern" id="documentType" name="document_type" style="padding-left: 2.65rem;">
                 <option value="Aadhar Card">Aadhar Card</option>
-                <option value="College ID Card">College ID Card</option>
                 <option value="Passport">Passport</option>
                 <option value="Driving License">Driving License</option>
                 <option value="Voter ID">Voter ID</option>
@@ -775,7 +862,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
         <!-- Document File Upload (`file_path`) -->
-        <div class="form-group mb-4">
+        <div class="form-group mb-3">
           <label for="docFileInput">Upload Document Copy <small class="text-muted">(PDF, JPG, PNG)</small></label>
           <div class="input-wrapper">
             <input 
@@ -787,6 +874,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             />
             <i class="fa-solid fa-file-arrow-up input-icon"></i>
           </div>
+        </div>
+
+        <!-- Receipt File Upload (`receipt` in users table) -->
+        <div class="form-group mb-4">
+          <label for="receiptFileInput">Upload Payment / Fee Receipt <small class="text-muted">(Optional &bull; PDF, DOC, DOCX, JPG, PNG)</small></label>
+          <div class="input-wrapper">
+            <input 
+              type="file" 
+              class="form-control-modern pt-2" 
+              id="receiptFileInput" 
+              name="receipt" 
+              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp"
+            />
+            <i class="fa-solid fa-receipt input-icon"></i>
+          </div>
+          <small class="form-text text-muted mt-1">
+            <i class="fa-solid fa-circle-info mr-1 text-primary"></i> Upload admission fee receipt or bank payment proof (File or Image allowed).
+          </small>
         </div>
 
         <!-- Submit Button -->
@@ -837,6 +942,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       const guardianPhoneInput = document.getElementById('guardianPhone');
       const guardianAddressInput = document.getElementById('guardianAddress');
       const documentNumberInput = document.getElementById('documentNumber');
+
+      // Room & Language Preferences
+      const roomTypeSelect = document.getElementById('roomType');
+      const languageSelect = document.getElementById('preferredLanguage');
+      const languageSingleBadge = document.getElementById('languageSingleBadge');
+      const languageHint = document.getElementById('languageHint');
+
+      function updateRoomPreferences() {
+        if (!roomTypeSelect || !languageSelect) return;
+        const selectedRoom = (roomTypeSelect.value || '').toLowerCase().trim();
+
+        if (selectedRoom === 'single') {
+          // If single room type is selected: don't fill language/roommate preference
+          languageSelect.value = '';
+          languageSelect.disabled = true;
+          languageSelect.style.backgroundColor = '#f1f5f9';
+          languageSelect.style.cursor = 'not-allowed';
+          languageSelect.style.opacity = '0.7';
+          if (languageSingleBadge) languageSingleBadge.style.display = 'inline-block';
+          if (languageHint) {
+            languageHint.innerHTML = '<i class="fa-solid fa-circle-info mr-1 text-info"></i> Single room selected &mdash; roommate language matching is not applicable and left empty.';
+            languageHint.className = 'form-text text-info mt-1';
+          }
+        } else {
+          // Double, Thriple, or unselected
+          languageSelect.disabled = false;
+          languageSelect.style.backgroundColor = '';
+          languageSelect.style.cursor = '';
+          languageSelect.style.opacity = '1';
+          if (languageSingleBadge) languageSingleBadge.style.display = 'none';
+          if (languageHint) {
+            languageHint.innerHTML = '<i class="fa-solid fa-circle-info mr-1 text-primary"></i> Helps match roommates by preferred language for Double / Thriple sharing.';
+            languageHint.className = 'form-text text-muted mt-1';
+          }
+        }
+      }
+
+      if (roomTypeSelect) {
+        roomTypeSelect.addEventListener('change', updateRoomPreferences);
+        updateRoomPreferences(); // run on initial load
+      }
 
       // Errors
       const nameError = document.getElementById('nameError');

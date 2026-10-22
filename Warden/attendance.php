@@ -187,8 +187,14 @@ $out_window_fmt = (!empty($out_start_time) && !empty($out_end_time))
 
 // Format Attendance Status text and calculate exact Late duration (matching Student/attendance.php)
 function formatAttendanceStatusText($status_val, $created_at, $att_end_time = '21:30:00', $attendance_date = '') {
+    $clean_status = strtolower(trim($status_val));
+    // Never calculate Late for absent, leave, or outing
+    if (in_array($clean_status, ['absent', 'leave', 'outing'])) {
+        return ucfirst($clean_status);
+    }
+
     $fallback_end_time = !empty($att_end_time) ? $att_end_time : '21:30:00';
-    $is_late_status = (stripos($status_val, 'Late') !== false);
+    $is_late_status = ($clean_status === 'late' || stripos($status_val, 'Late') !== false);
     
     if (!empty($created_at)) {
         $created_timestamp = strtotime($created_at);
@@ -218,7 +224,7 @@ function formatAttendanceStatusText($status_val, $created_at, $att_end_time = '2
     if ($is_late_status) {
         return 'Late';
     }
-    return ucfirst($status_val);
+    return ucfirst($clean_status);
 }
 
 // -------------------------------------------------------------
@@ -233,8 +239,8 @@ $status_filter = isset($_GET['status']) ? strtolower(trim($_GET['status'])) : 'a
 $block_filter = isset($_GET['block_id']) ? intval($_GET['block_id']) : 0;
 $search_query = isset($_GET['search']) ? trim($_GET['search']) : '';
 
-// First visit default behavior: Default to Today
-if (!isset($_GET['date']) && !isset($_GET['preset']) && !isset($_GET['from_date']) && !isset($_GET['all'])) {
+// First visit default behavior: Default to Today unless status, preset, or specific date is requested
+if (!isset($_GET['date']) && !isset($_GET['preset']) && !isset($_GET['from_date']) && !isset($_GET['all']) && !isset($_GET['status'])) {
     $preset = 'today';
     $filter_date = date('Y-m-d');
     $filter_mode = 'single';
@@ -266,6 +272,13 @@ if ($preset === 'today') {
     $to_date = date('Y-m-t');
     $filter_date = '';
     $active_preset_name = 'this_month';
+} elseif ($preset === 'absent' || ($status_filter === 'absent' && empty($filter_date) && empty($from_date))) {
+    $filter_mode = 'all';
+    $filter_date = '';
+    $from_date = '';
+    $to_date = '';
+    $status_filter = 'absent';
+    $active_preset_name = 'absent';
 } elseif ($preset === 'all') {
     $filter_mode = 'all';
     $filter_date = '';
@@ -385,25 +398,30 @@ $kpi_outing  = 0;
 
 foreach ($attendance_records as $rec) {
     $st = strtolower($rec['status'] ?? 'present');
-    $calc_label = formatAttendanceStatusText($st, $rec['record_created_at'] ?? '', $att_end_time, $rec['attendance_date'] ?? '');
-    $is_late = (stripos($calc_label, 'Late') !== false) || ($st === 'late');
-
-    if ($is_late) {
-        $kpi_late++;
-    } elseif ($st === 'present') {
-        $kpi_present++;
-    } elseif ($st === 'absent') {
+    if ($st === 'absent') {
         $kpi_absent++;
     } elseif ($st === 'leave') {
         $kpi_leave++;
     } elseif ($st === 'outing') {
         $kpi_outing++;
+    } else {
+        $calc_label = formatAttendanceStatusText($st, $rec['record_created_at'] ?? '', $att_end_time, $rec['attendance_date'] ?? '');
+        $is_late = (stripos($calc_label, 'Late') !== false) || ($st === 'late');
+        if ($is_late) {
+            $kpi_late++;
+        } else {
+            $kpi_present++;
+        }
     }
 }
 
 $kpi_present_pct = ($kpi_total > 0) ? round(($kpi_present / $kpi_total) * 100, 1) : 0;
 $kpi_late_pct    = ($kpi_total > 0) ? round(($kpi_late / $kpi_total) * 100, 1) : 0;
 $kpi_absent_pct  = ($kpi_total > 0) ? round(($kpi_absent / $kpi_total) * 100, 1) : 0;
+
+// Fetch overall hostel absent count for quick badge display
+$all_absent_res = $conn->query("SELECT COUNT(*) AS total_absent FROM attendance a JOIN users u ON a.student_id = u.id WHERE u.role = 'student' AND LOWER(a.status) = 'absent'");
+$total_all_absent = ($all_absent_res && $row = $all_absent_res->fetch_assoc()) ? intval($row['total_absent']) : 0;
 
 // Fetch active student list for the manual entry & roll call dropdown
 $students_sql = "
@@ -763,7 +781,7 @@ ob_start();
   <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 pb-3 border-bottom">
     <div class="d-flex flex-wrap align-items-center">
       <span class="font-weight-700 text-dark mr-3 mb-1" style="font-size: 0.86rem;">
-        <i class="fa-solid fa-filter text-success mr-1"></i> Quick Date Filter:
+        <i class="fa-solid fa-filter text-success mr-1"></i> Quick Filter:
       </span>
       <a href="attendance.php?preset=today" class="date-preset-pill <?= ($active_preset_name === 'today') ? 'active' : '' ?>">
         <i class="fa-solid fa-calendar-day"></i> Today (<?= date('d M') ?>)
@@ -776,6 +794,9 @@ ob_start();
       </a>
       <a href="attendance.php?preset=this_month" class="date-preset-pill <?= ($active_preset_name === 'this_month') ? 'active' : '' ?>">
         <i class="fa-solid fa-calendar-week"></i> This Month (<?= date('M Y') ?>)
+      </a>
+      <a href="attendance.php?preset=absent" class="date-preset-pill <?= ($active_preset_name === 'absent' || $status_filter === 'absent') ? 'active' : '' ?>" style="background: #fee2e2; color: #dc2626; border-color: #fca5a5;">
+        <i class="fa-solid fa-circle-xmark"></i> Absent Data (<?= $total_all_absent ?>)
       </a>
       <a href="attendance.php?preset=all" class="date-preset-pill <?= ($active_preset_name === 'all') ? 'active' : '' ?>">
         <i class="fa-solid fa-layer-group"></i> All Records
@@ -874,73 +895,95 @@ ob_start();
      ========================================================= -->
 <div class="row mb-4">
   <!-- Total Records Logged -->
-  <div class="col-xl-3 col-md-6 mb-3">
-    <div class="metric-kpi-card">
-      <div class="d-flex align-items-center justify-content-between">
-        <div>
-          <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px;">Total Logs</span>
-          <h3 class="font-weight-800 text-dark mb-0"><?= $kpi_total ?></h3>
-          <small class="text-muted font-weight-600" style="font-size: 0.75rem;">Across all dorms</small>
-        </div>
-        <div class="kpi-icon icon-total">
-          <i class="fa-solid fa-clipboard-list"></i>
+  <div class="col-xl-2 col-md-4 col-sm-6 mb-3">
+    <a href="attendance.php?status=all<?= ($filter_mode === 'all') ? '&preset=all' : (!empty($filter_date) ? '&date=' . urlencode($filter_date) : '') ?>" class="text-decoration-none d-block h-100">
+      <div class="metric-kpi-card <?= ($status_filter === 'all') ? 'border-primary shadow-sm' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.72rem; text-transform: uppercase;">Total Logs</span>
+            <h3 class="font-weight-800 text-dark mb-0"><?= $kpi_total ?></h3>
+            <small class="text-muted" style="font-size: 0.72rem;">All records</small>
+          </div>
+          <div class="kpi-icon icon-total" style="width: 40px; height: 40px; font-size: 1.1rem;">
+            <i class="fa-solid fa-clipboard-list"></i>
+          </div>
         </div>
       </div>
-    </div>
+    </a>
   </div>
 
   <!-- Present Students -->
-  <div class="col-xl-3 col-md-6 mb-3">
-    <div class="metric-kpi-card">
-      <div class="d-flex align-items-center justify-content-between">
-        <div>
-          <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px;">Present Students</span>
-          <h3 class="font-weight-800 text-success mb-0"><?= $kpi_present ?></h3>
-          <small class="text-success font-weight-700" style="font-size: 0.75rem;">
-            <i class="fa-solid fa-circle-check mr-1"></i><?= $kpi_present_pct ?>% On-time Rate
-          </small>
-        </div>
-        <div class="kpi-icon icon-present">
-          <i class="fa-solid fa-user-check"></i>
+  <div class="col-xl-2 col-md-4 col-sm-6 mb-3">
+    <a href="attendance.php?status=present<?= ($filter_mode === 'all') ? '&preset=all' : (!empty($filter_date) ? '&date=' . urlencode($filter_date) : '') ?>" class="text-decoration-none d-block h-100">
+      <div class="metric-kpi-card <?= ($status_filter === 'present') ? 'border-success shadow-sm' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.72rem; text-transform: uppercase;">Present</span>
+            <h3 class="font-weight-800 text-success mb-0"><?= $kpi_present ?></h3>
+            <small class="text-success font-weight-bold" style="font-size: 0.72rem;"><?= $kpi_present_pct ?>% On-time</small>
+          </div>
+          <div class="kpi-icon icon-present" style="width: 40px; height: 40px; font-size: 1.1rem;">
+            <i class="fa-solid fa-user-check"></i>
+          </div>
         </div>
       </div>
-    </div>
+    </a>
   </div>
 
   <!-- Late Check-ins -->
-  <div class="col-xl-3 col-md-6 mb-3">
-    <div class="metric-kpi-card">
-      <div class="d-flex align-items-center justify-content-between">
-        <div>
-          <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px;">Late Check-ins</span>
-          <h3 class="font-weight-800 text-warning mb-0" style="color: #d97706 !important;"><?= $kpi_late ?></h3>
-          <small class="text-warning font-weight-700" style="font-size: 0.75rem;">
-            <i class="fa-solid fa-clock mr-1"></i><?= $kpi_late_pct ?>% Past Curfew
-          </small>
-        </div>
-        <div class="kpi-icon icon-late">
-          <i class="fa-solid fa-clock-rotate-left"></i>
+  <div class="col-xl-2 col-md-4 col-sm-6 mb-3">
+    <a href="attendance.php?status=late<?= ($filter_mode === 'all') ? '&preset=all' : (!empty($filter_date) ? '&date=' . urlencode($filter_date) : '') ?>" class="text-decoration-none d-block h-100">
+      <div class="metric-kpi-card <?= ($status_filter === 'late') ? 'border-warning shadow-sm' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.72rem; text-transform: uppercase;">Late</span>
+            <h3 class="font-weight-800 text-warning mb-0" style="color: #d97706 !important;"><?= $kpi_late ?></h3>
+            <small class="text-warning font-weight-bold" style="font-size: 0.72rem;"><?= $kpi_late_pct ?>% Past Curfew</small>
+          </div>
+          <div class="kpi-icon icon-late" style="width: 40px; height: 40px; font-size: 1.1rem;">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+          </div>
         </div>
       </div>
-    </div>
+    </a>
   </div>
 
-  <!-- Absent / Leave / Outing -->
-  <div class="col-xl-3 col-md-6 mb-3">
-    <div class="metric-kpi-card">
-      <div class="d-flex align-items-center justify-content-between">
-        <div>
-          <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px;">Absent / Leave / Outing</span>
-          <h3 class="font-weight-800 text-danger mb-0"><?= ($kpi_absent + $kpi_leave + $kpi_outing) ?></h3>
-          <small class="text-danger font-weight-700" style="font-size: 0.75rem;">
-            <?= $kpi_absent ?> Absent | <?= ($kpi_leave + $kpi_outing) ?> Leave/Out
-          </small>
-        </div>
-        <div class="kpi-icon icon-absent">
-          <i class="fa-solid fa-user-xmark"></i>
+  <!-- Absent Students (Dedicated & Prominent) -->
+  <div class="col-xl-3 col-md-6 col-sm-6 mb-3">
+    <a href="attendance.php?status=absent<?= ($filter_mode === 'all') ? '&preset=all' : (!empty($filter_date) ? '&date=' . urlencode($filter_date) : '') ?>" class="text-decoration-none d-block h-100">
+      <div class="metric-kpi-card <?= ($status_filter === 'absent') ? 'border-danger shadow-sm' : '' ?>" style="<?= ($kpi_absent > 0) ? 'background: #fff8f8; border: 1.5px solid #fecaca;' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-danger font-weight-700 d-block mb-1" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px;">
+              <i class="fa-solid fa-circle-exclamation mr-1"></i>Absent Data
+            </span>
+            <h3 class="font-weight-800 text-danger mb-0"><?= $kpi_absent ?></h3>
+            <small class="text-danger font-weight-bold" style="font-size: 0.72rem;">Click to view absent list &rarr;</small>
+          </div>
+          <div class="kpi-icon icon-absent" style="width: 44px; height: 44px; font-size: 1.2rem; box-shadow: 0 4px 10px rgba(220,38,38,0.2);">
+            <i class="fa-solid fa-user-xmark"></i>
+          </div>
         </div>
       </div>
-    </div>
+    </a>
+  </div>
+
+  <!-- Leave / Outing -->
+  <div class="col-xl-3 col-md-6 col-sm-6 mb-3">
+    <a href="attendance.php?status=leave<?= ($filter_mode === 'all') ? '&preset=all' : (!empty($filter_date) ? '&date=' . urlencode($filter_date) : '') ?>" class="text-decoration-none d-block h-100">
+      <div class="metric-kpi-card <?= (in_array($status_filter, ['leave', 'outing'])) ? 'border-info shadow-sm' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-muted font-weight-700 d-block mb-1" style="font-size: 0.72rem; text-transform: uppercase;">Leave / Outing</span>
+            <h3 class="font-weight-800 text-info mb-0"><?= ($kpi_leave + $kpi_outing) ?></h3>
+            <small class="text-muted" style="font-size: 0.72rem;"><?= $kpi_leave ?> Leave &bull; <?= $kpi_outing ?> Outing</small>
+          </div>
+          <div class="kpi-icon icon-leave" style="width: 40px; height: 40px; font-size: 1.1rem;">
+            <i class="fa-solid fa-plane-departure"></i>
+          </div>
+        </div>
+      </div>
+    </a>
   </div>
 </div>
 
@@ -1074,6 +1117,11 @@ ob_start();
                     <span class="badge-att-status badge-status-absent">
                       <i class="fa-solid fa-circle-xmark"></i> Absent
                     </span>
+                    <?php if (stripos($row['remarks'] ?? '', 'Leave') !== false): ?>
+                      <small class="badge badge-light border text-danger d-block mt-1 font-weight-bold px-2 py-0" style="font-size: 0.7rem; border-radius: 6px;">
+                        <i class="fa-solid fa-file-shield mr-1"></i>Approved Leave
+                      </small>
+                    <?php endif; ?>
                   <?php elseif ($status_clean === 'leave'): ?>
                     <span class="badge-att-status badge-status-leave">
                       <i class="fa-solid fa-plane-departure"></i> Leave

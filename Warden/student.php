@@ -192,11 +192,14 @@ if (isset($_GET['delete'])) {
     }
     $conn->query("DELETE FROM room_allocations WHERE student_id=$id");
 
-    // Delete profile image & document file if exist
-    $u_res = $conn->query("SELECT profile_image FROM users WHERE id=$id");
+    // Delete profile image & receipt & document file if exist
+    $u_res = $conn->query("SELECT profile_image, receipt FROM users WHERE id=$id");
     if ($u_res && $u_row = $u_res->fetch_assoc()) {
         if (!empty($u_row['profile_image']) && file_exists($profile_dir . $u_row['profile_image'])) {
             @unlink($profile_dir . $u_row['profile_image']);
+        }
+        if (!empty($u_row['receipt']) && file_exists($doc_dir . $u_row['receipt'])) {
+            @unlink($doc_dir . $u_row['receipt']);
         }
     }
     $d_res = $conn->query("SELECT file_path FROM student_documents WHERE student_id=$id");
@@ -234,6 +237,8 @@ $query = "
            d.verified_by,
            d.verified_at,
            d.remarks AS doc_remarks,
+           verifier.name AS verifier_name,
+           verifier.role AS verifier_role,
            ra.id AS allocation_id,
            ra.block_id,
            ra.floor_id,
@@ -241,6 +246,7 @@ $query = "
            ra.bed_id,
            ra.allocated_date,
            ra.remarks AS alloc_remarks,
+           allocator.name AS allocator_name,
            blk.name AS allocated_block_name,
            flr.name AS allocated_floor_name,
            rm.room_number AS allocated_room_number,
@@ -250,7 +256,9 @@ $query = "
     FROM users u
     LEFT JOIN student_guardians g ON u.id = g.student_id
     LEFT JOIN student_documents d ON u.id = d.student_id
+    LEFT JOIN users verifier ON d.verified_by = verifier.id
     LEFT JOIN room_allocations ra ON u.id = ra.student_id AND ra.status = 'active'
+    LEFT JOIN users allocator ON ra.allocated_by = allocator.id
     LEFT JOIN blocks blk ON ra.block_id = blk.id
     LEFT JOIN floors flr ON ra.floor_id = flr.id
     LEFT JOIN rooms rm ON ra.room_id = rm.id
@@ -273,16 +281,48 @@ if ($floors_res && $floors_res->num_rows > 0) {
     while($f = $floors_res->fetch_assoc()) { $all_floors[] = $f; }
 }
 
-$rooms_res = $conn->query("SELECT id, floor_id, room_number, room_type, capacity, price FROM rooms WHERE status != 'inactive' ORDER BY room_number ASC");
+$rooms_res = $conn->query("
+    SELECT r.id, r.floor_id, r.room_number, r.room_type, r.capacity, r.price, r.status,
+           f.name AS floor_name, f.floor_number, f.block_id,
+           b.name AS block_name
+    FROM rooms r
+    JOIN floors f ON r.floor_id = f.id
+    JOIN blocks b ON f.block_id = b.id
+    WHERE r.status != 'inactive'
+    ORDER BY r.room_number ASC
+");
 $all_rooms = [];
 if ($rooms_res && $rooms_res->num_rows > 0) {
     while($r = $rooms_res->fetch_assoc()) { $all_rooms[] = $r; }
 }
 
-$beds_res = $conn->query("SELECT id, room_id, bed_number, status FROM beds ORDER BY bed_number ASC");
+$beds_res = $conn->query("SELECT id, room_id, bed_number, status FROM beds ORDER BY CAST(bed_number AS UNSIGNED) ASC, bed_number ASC");
 $all_beds = [];
 if ($beds_res && $beds_res->num_rows > 0) {
     while($bd = $beds_res->fetch_assoc()) { $all_beds[] = $bd; }
+}
+
+// Fetch active room occupants (roommates) with their language, room_type, and bed details
+$occupants_res = $conn->query("
+    SELECT ra.room_id, ra.bed_id, ra.student_id, ra.allocated_date,
+           u.name AS student_name, u.email AS student_email, u.phone AS student_phone,
+           u.language AS student_language, u.room_type AS student_room_type,
+           b.bed_number
+    FROM room_allocations ra
+    JOIN users u ON ra.student_id = u.id
+    JOIN beds b ON ra.bed_id = b.id
+    WHERE ra.status = 'active'
+    ORDER BY CAST(b.bed_number AS UNSIGNED) ASC, b.bed_number ASC
+");
+$room_occupants = [];
+if ($occupants_res && $occupants_res->num_rows > 0) {
+    while($occ = $occupants_res->fetch_assoc()) {
+        $rid = intval($occ['room_id']);
+        if (!isset($room_occupants[$rid])) {
+            $room_occupants[$rid] = [];
+        }
+        $room_occupants[$rid][] = $occ;
+    }
 }
 
 // Fetch Fee History by student
@@ -463,7 +503,25 @@ ob_start();
                                         </div>
                                     <?php endif; ?>
                                 </td>
-                                <td><span class="font-weight-bold"><?= htmlspecialchars($row['name']) ?></span></td>
+                                <td>
+                                    <span class="font-weight-bold"><?= htmlspecialchars($row['name']) ?></span>
+                                    <?php if (!empty($row['room_type']) || !empty($row['floor_type']) || !empty($row['language']) || !empty($row['receipt'])): ?>
+                                        <div class="mt-1" style="display: flex; flex-wrap: wrap; gap: 4px;">
+                                            <?php if (!empty($row['room_type'])): ?>
+                                                <span class="badge badge-light border text-primary" style="font-size: 0.72rem;" title="Preferred Room Type"><i class="ti-home mr-1"></i><?= ucfirst(htmlspecialchars($row['room_type'])) ?></span>
+                                            <?php endif; ?>
+                                            <?php if (!empty($row['floor_type'])): ?>
+                                                <span class="badge badge-light border text-info" style="font-size: 0.72rem;" title="Preferred Floor"><i class="ti-layers mr-1"></i><?= ucfirst(htmlspecialchars($row['floor_type'])) ?></span>
+                                            <?php endif; ?>
+                                            <?php if (!empty($row['language'])): ?>
+                                                <span class="badge badge-light border" style="color: #6366f1; font-size: 0.72rem;" title="Roommate Language"><i class="ti-comment mr-1"></i><?= ucfirst(htmlspecialchars($row['language'])) ?></span>
+                                            <?php endif; ?>
+                                            <?php if (!empty($row['receipt'])): ?>
+                                                <span class="badge badge-light border text-success" style="font-size: 0.72rem;" title="Payment / Fee Receipt Uploaded"><i class="ti-receipt mr-1"></i>Receipt</span>
+                                            <?php endif; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </td>
                                 <td><?= htmlspecialchars($row['email']) ?><br><small class="text-muted"><?= htmlspecialchars($row['phone']) ?></small></td>
                                 <td>
                                     <?php 
@@ -477,6 +535,7 @@ ob_start();
                                                 data-email="<?= htmlspecialchars($row['email']) ?>"
                                                 data-phone="<?= htmlspecialchars($row['phone']) ?>"
                                                 data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
+                                                data-receipt="<?= htmlspecialchars($row['receipt'] ?? '') ?>"
                                                 data-document_type="<?= htmlspecialchars($row['document_type'] ?? 'College ID') ?>"
                                                 data-document_number="<?= htmlspecialchars($row['document_number'] ?? 'N/A') ?>"
                                                 data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
@@ -492,6 +551,7 @@ ob_start();
                                                 data-email="<?= htmlspecialchars($row['email']) ?>"
                                                 data-phone="<?= htmlspecialchars($row['phone']) ?>"
                                                 data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
+                                                data-receipt="<?= htmlspecialchars($row['receipt'] ?? '') ?>"
                                                 data-document_type="<?= htmlspecialchars($row['document_type'] ?? 'College ID') ?>"
                                                 data-document_number="<?= htmlspecialchars($row['document_number'] ?? 'N/A') ?>"
                                                 data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
@@ -526,7 +586,13 @@ ob_start();
                                             data-email="<?= htmlspecialchars($row['email']) ?>"
                                             data-phone="<?= htmlspecialchars($row['phone']) ?>"
                                             data-profile_image="<?= htmlspecialchars($row['profile_image'] ?? '') ?>"
+                                            data-receipt="<?= htmlspecialchars($row['receipt'] ?? '') ?>"
                                             data-status="<?= htmlspecialchars($row['status']) ?>"
+                                            data-created_at="<?= htmlspecialchars($row['created_at'] ?? '') ?>"
+                                            data-last_login="<?= htmlspecialchars($row['last_login'] ?? '') ?>"
+                                            data-pref_room_type="<?= htmlspecialchars($row['room_type'] ?? '') ?>"
+                                            data-pref_language="<?= htmlspecialchars($row['language'] ?? '') ?>"
+                                            data-pref_floor_type="<?= htmlspecialchars($row['floor_type'] ?? '') ?>"
                                             data-guardian_name="<?= htmlspecialchars($row['guardian_name'] ?? '') ?>"
                                             data-guardian_relationship="<?= htmlspecialchars($row['guardian_relationship'] ?? '') ?>"
                                             data-guardian_phone="<?= htmlspecialchars($row['guardian_phone'] ?? '') ?>"
@@ -536,8 +602,11 @@ ob_start();
                                             data-document_number="<?= htmlspecialchars($row['document_number'] ?? '') ?>"
                                             data-doc_file_path="<?= htmlspecialchars($row['doc_file_path'] ?? '') ?>"
                                             data-verification="<?= htmlspecialchars($row['verification'] ?? 'pending') ?>"
+                                            data-verified_by_name="<?= htmlspecialchars($row['verifier_name'] ?? '') ?>"
+                                            data-verified_at="<?= htmlspecialchars($row['verified_at'] ?? '') ?>"
                                             data-doc_remarks="<?= htmlspecialchars($row['doc_remarks'] ?? '') ?>"
                                             data-allocation_id="<?= $row['allocation_id'] ?? '' ?>"
+                                            data-room_id="<?= $row['room_id'] ?? '' ?>"
                                             data-allocated_block_name="<?= htmlspecialchars($row['allocated_block_name'] ?? '') ?>"
                                             data-allocated_floor_name="<?= htmlspecialchars($row['allocated_floor_name'] ?? '') ?>"
                                             data-allocated_room_number="<?= htmlspecialchars($row['allocated_room_number'] ?? '') ?>"
@@ -545,6 +614,8 @@ ob_start();
                                             data-allocated_room_price="<?= htmlspecialchars($row['allocated_room_price'] ?? '') ?>"
                                             data-allocated_bed_number="<?= htmlspecialchars($row['allocated_bed_number'] ?? '') ?>"
                                             data-allocated_date="<?= htmlspecialchars($row['allocated_date'] ?? '') ?>"
+                                            data-allocator_name="<?= htmlspecialchars($row['allocator_name'] ?? '') ?>"
+                                            data-alloc_remarks="<?= htmlspecialchars($row['alloc_remarks'] ?? '') ?>"
                                             data-toggle="modal" data-target="#viewModal"><i class="ti-eye"></i></button>
 
                                         <!-- Allocation / Verify First Button -->
@@ -554,6 +625,9 @@ ob_start();
                                                 data-name="<?= htmlspecialchars($row['name']) ?>"
                                                 data-email="<?= htmlspecialchars($row['email']) ?>"
                                                 data-phone="<?= htmlspecialchars($row['phone']) ?>"
+                                                data-pref_room_type="<?= htmlspecialchars($row['room_type'] ?? '') ?>"
+                                                data-pref_language="<?= htmlspecialchars($row['language'] ?? '') ?>"
+                                                data-pref_floor_type="<?= htmlspecialchars($row['floor_type'] ?? '') ?>"
                                                 data-allocation_id="<?= $row['allocation_id'] ?? '' ?>"
                                                 data-block_id="<?= $row['block_id'] ?? '' ?>"
                                                 data-floor_id="<?= $row['floor_id'] ?? '' ?>"
@@ -636,6 +710,7 @@ ob_start();
                     <div class="mb-2"><strong>Document Number:</strong> <span id="verify_doc_number" class="font-weight-medium"></span></div>
                     <div class="mb-2"><strong>Current Status:</strong> <span id="verify_current_status_badge"></span></div>
                     <div class="mt-3" id="verify_doc_file_wrapper"></div>
+                    <div class="mt-3" id="verify_receipt_file_wrapper"></div>
                 </div>
             </div>
 
@@ -659,11 +734,11 @@ ob_start();
 
 <!-- Allocation Modal -->
 <div class="modal fade" id="allocationModal" tabindex="-1" role="dialog">
-  <div class="modal-dialog" role="document">
+  <div class="modal-dialog modal-lg" role="document">
     <div class="modal-content">
       <form method="POST" action="" id="allocForm">
           <div class="modal-header">
-            <h5 class="modal-title">Room & Bed Allocation</h5>
+            <h5 class="modal-title"><i class="ti-layout-grid2 mr-2 text-primary"></i>Room & Bed Allocation</h5>
             <button type="button" class="close" data-dismiss="modal" aria-label="Close">
               <span aria-hidden="true">&times;</span>
             </button>
@@ -683,26 +758,55 @@ ob_start();
                 </div>
             </div>
 
+            <!-- Student Registration Preferences Card -->
+            <div class="card mb-3 border shadow-none" style="background: #f8fafc; border-radius: 10px; border-color: #e2e8f0 !important;">
+                <div class="card-body p-3">
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                        <span class="font-weight-bold text-dark small"><i class="ti-bookmark-alt mr-1 text-primary"></i> Student Registration Preferences:</span>
+                        <span class="badge badge-light border text-muted" style="font-size: 0.72rem;">Check & Match</span>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4 mb-2 mb-sm-0">
+                            <small class="text-muted d-block font-weight-medium">Requested Room Type</small>
+                            <span id="alloc_pref_room_type" class="font-weight-bold text-primary"></span>
+                        </div>
+                        <div class="col-sm-4 mb-2 mb-sm-0">
+                            <small class="text-muted d-block font-weight-medium">Requested Floor</small>
+                            <span id="alloc_pref_floor_type" class="font-weight-bold text-info"></span>
+                        </div>
+                        <div class="col-sm-4">
+                            <small class="text-muted d-block font-weight-medium">Roommate Language</small>
+                            <span id="alloc_pref_language" class="font-weight-bold" style="color: #6366f1;"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Smart Matching Rooms & Roommate Reference Panel -->
+            <div id="alloc_smart_matches_box" class="mb-3"></div>
+
             <!-- Current Allocation Status Box -->
             <div id="alloc_current_status_box" class="mb-3"></div>
 
-            <div class="form-group">
-                <label>Block <span class="text-danger">*</span></label>
-                <select name="block_id" id="alloc_block_id" class="form-control">
-                    <option value="">Select Block</option>
-                    <?php foreach($all_blocks as $blk): ?>
-                        <option value="<?= $blk['id'] ?>"><?= htmlspecialchars($blk['name']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <small class="text-danger" id="alloc_block_err"></small>
-            </div>
+            <div class="row">
+                <div class="col-md-6 form-group">
+                    <label>Block <span class="text-danger">*</span></label>
+                    <select name="block_id" id="alloc_block_id" class="form-control">
+                        <option value="">Select Block</option>
+                        <?php foreach($all_blocks as $blk): ?>
+                            <option value="<?= $blk['id'] ?>"><?= htmlspecialchars($blk['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small class="text-danger" id="alloc_block_err"></small>
+                </div>
 
-            <div class="form-group">
-                <label>Floor <span class="text-danger">*</span></label>
-                <select name="floor_id" id="alloc_floor_id" class="form-control" disabled>
-                    <option value="">Select Block first</option>
-                </select>
-                <small class="text-danger" id="alloc_floor_err"></small>
+                <div class="col-md-6 form-group">
+                    <label>Floor <span class="text-danger">*</span></label>
+                    <select name="floor_id" id="alloc_floor_id" class="form-control" disabled>
+                        <option value="">Select Block first</option>
+                    </select>
+                    <small class="text-danger" id="alloc_floor_err"></small>
+                </div>
             </div>
 
             <div class="form-group">
@@ -712,6 +816,9 @@ ob_start();
                 </select>
                 <small class="text-danger" id="alloc_room_err"></small>
                 <small class="text-muted d-block mt-1" id="alloc_room_price_info"></small>
+                
+                <!-- Selected Room Occupants / Roommates Details Box -->
+                <div id="alloc_selected_room_occupants_box" class="mt-2"></div>
             </div>
 
             <div class="form-group">
@@ -744,79 +851,127 @@ ob_start();
 
 <!-- View Details Modal -->
 <div class="modal fade" id="viewModal" tabindex="-1" role="dialog">
-  <div class="modal-dialog" role="document" style="max-width: 700px;">
-    <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">Student Profile & Details</h5>
-          <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+  <div class="modal-dialog modal-lg" role="document" style="max-width: 820px;">
+    <div class="modal-content shadow-lg border-0" style="border-radius: 12px; overflow: hidden;">
+        <div class="modal-header bg-primary text-white py-3">
+          <div class="d-flex align-items-center">
+            <i class="ti-user mr-2" style="font-size: 20px;"></i>
+            <h5 class="modal-title font-weight-bold mb-0 text-white">Student Detailed Profile & Information</h5>
+          </div>
+          <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close" style="opacity: 0.9;">
             <span aria-hidden="true">&times;</span>
           </button>
         </div>
-        <div class="modal-body">
-            <!-- Student Header Info -->
-            <div class="d-flex align-items-center mb-4 p-3 rounded" style="background: #f8f9fa;">
-                <div id="view_profile_img_wrapper" class="mr-3"></div>
-                <div>
-                    <h4 id="view_name" class="mb-1"></h4>
-                    <p class="mb-1 text-muted"><i class="ti-email mr-1"></i><span id="view_email"></span> | <i class="ti-mobile mr-1"></i><span id="view_phone"></span></p>
-                    <span id="view_account_status_badge"></span>
+        <div class="modal-body p-4" style="background-color: #f8fafc; max-height: calc(100vh - 160px); overflow-y: auto;">
+            <!-- Student Header Profile Banner -->
+            <div class="card border-0 shadow-sm mb-3" style="border-radius: 10px; background: #ffffff;">
+                <div class="card-body p-3">
+                    <div class="d-flex flex-column flex-sm-row align-items-sm-center">
+                        <div id="view_profile_img_wrapper" class="mr-sm-4 mb-3 mb-sm-0 text-center"></div>
+                        <div class="flex-grow-1">
+                            <div class="d-flex flex-wrap align-items-center justify-content-between mb-1">
+                                <h4 id="view_name" class="font-weight-bold mb-1 text-dark"></h4>
+                                <div class="d-flex align-items-center" style="gap: 6px;">
+                                    <span id="view_student_id_badge" class="badge badge-light border font-weight-bold text-muted"></span>
+                                    <span id="view_account_status_badge"></span>
+                                </div>
+                            </div>
+                            <div class="d-flex flex-wrap text-muted small mb-2" style="gap: 15px;">
+                                <span><i class="ti-email mr-1 text-primary"></i><a id="view_email" href="#" class="text-muted"></a></span>
+                                <span><i class="ti-mobile mr-1 text-success"></i><a id="view_phone" href="#" class="text-muted"></a></span>
+                                <span><i class="ti-shield mr-1 text-info"></i>Role: Student</span>
+                            </div>
+                            <div class="pt-2 border-top d-flex flex-wrap text-muted small" style="gap: 20px; font-size: 0.78rem;">
+                                <span><i class="ti-calendar mr-1 text-secondary"></i><strong>Registered:</strong> <span id="view_created_at"></span></span>
+                                <span><i class="ti-time mr-1 text-secondary"></i><strong>Last Login:</strong> <span id="view_last_login"></span></span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <!-- Document Verification Card -->
-            <div class="card border mb-3">
-                <div class="card-header bg-light font-weight-bold d-flex justify-content-between align-items-center">
-                    <span><i class="ti-id-badge mr-1"></i> Document & Verification Details</span>
+            <!-- Registration Room & Sharing Preferences Card -->
+            <div class="card border shadow-sm mb-3" style="border-radius: 10px;">
+                <div class="card-header bg-white py-2 font-weight-bold d-flex align-items-center justify-content-between">
+                    <span class="text-dark"><i class="ti-bookmark-alt mr-2 text-primary"></i> Registration Room & Sharing Preferences</span>
+                    <span class="badge badge-light border text-muted" style="font-size: 0.72rem;">Student Request</span>
+                </div>
+                <div class="card-body p-3">
+                    <div class="row">
+                        <div class="col-sm-4 mb-2 mb-sm-0">
+                            <small class="text-muted d-block font-weight-medium">Requested Room Type</small>
+                            <span id="view_pref_room_type"></span>
+                        </div>
+                        <div class="col-sm-4 mb-2 mb-sm-0">
+                            <small class="text-muted d-block font-weight-medium">Requested Floor</small>
+                            <span id="view_pref_floor_type"></span>
+                        </div>
+                        <div class="col-sm-4">
+                            <small class="text-muted d-block font-weight-medium">Preferred Roommate Language</small>
+                            <span id="view_pref_language"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Document & Verification Card -->
+            <div class="card border shadow-sm mb-3" style="border-radius: 10px;">
+                <div class="card-header bg-white py-2 font-weight-bold d-flex justify-content-between align-items-center">
+                    <span class="text-dark"><i class="ti-id-badge mr-2 text-info"></i> Document Verification & Identity</span>
                     <span id="view_verification_badge"></span>
                 </div>
-                <div class="card-body">
+                <div class="card-body p-3">
                     <div class="row">
-                        <div class="col-md-6 mb-2"><strong>Document Type:</strong> <span id="view_document_type"></span></div>
-                        <div class="col-md-6 mb-2"><strong>Document Number:</strong> <span id="view_document_number"></span></div>
-                        <div class="col-12 mt-1 mb-2"><strong>Attached Document:</strong> <span id="view_doc_file_wrapper"></span></div>
-                        <div class="col-12"><strong>Remarks:</strong> <span id="view_doc_remarks" class="text-muted"></span></div>
+                        <div class="col-md-6 mb-2"><strong>Document Type:</strong> <span id="view_document_type" class="text-primary font-weight-medium"></span></div>
+                        <div class="col-md-6 mb-2"><strong>Document Number:</strong> <span id="view_document_number" class="font-weight-medium"></span></div>
+                        <div class="col-md-6 mb-2" id="view_verified_by_col"><strong>Verified By:</strong> <span id="view_verified_by"></span></div>
+                        <div class="col-md-6 mb-2" id="view_verified_at_col"><strong>Verified At:</strong> <span id="view_verified_at"></span></div>
+                        <div class="col-12 mt-1 mb-2"><strong>Attached Document:</strong> <span id="view_doc_file_wrapper" class="ml-2"></span></div>
+                        <div class="col-12 mt-1 mb-2"><strong>Payment / Fee Receipt:</strong> <span id="view_receipt_file_wrapper" class="ml-2"></span></div>
+                        <div class="col-12"><strong>Verification Remarks:</strong> <span id="view_doc_remarks" class="text-muted"></span></div>
                     </div>
                 </div>
             </div>
 
             <!-- Room & Bed Allocation Card -->
-            <div class="card mb-3 border">
-                <div class="card-header bg-light font-weight-bold">
-                    <i class="ti-home mr-1"></i> Room & Bed Allocation
+            <div class="card border shadow-sm mb-3" style="border-radius: 10px;">
+                <div class="card-header bg-white py-2 font-weight-bold d-flex justify-content-between align-items-center">
+                    <span class="text-dark"><i class="ti-home mr-2 text-warning"></i> Active Room & Bed Allocation</span>
+                    <span id="view_allocation_status_badge"></span>
                 </div>
-                <div class="card-body">
+                <div class="card-body p-3">
                     <div id="view_allocation_wrapper"></div>
                 </div>
             </div>
 
-            <!-- Fee History Card -->
-            <div class="card mb-3 border">
-                <div class="card-header bg-light font-weight-bold d-flex justify-content-between align-items-center">
-                    <span><i class="ti-credit-card mr-1 text-success"></i> Fee History & Transactions</span>
-                    <span id="view_fee_count_badge" class="badge badge-success"></span>
-                </div>
-                <div class="card-body">
-                    <div id="view_fee_history_wrapper"></div>
-                </div>
-            </div>
-
             <!-- Guardian Info Card -->
-            <div class="card mb-3 border">
-                <div class="card-header bg-light font-weight-bold">
-                    <i class="ti-user mr-1"></i> Guardian Details
+            <div class="card border shadow-sm mb-3" style="border-radius: 10px;">
+                <div class="card-header bg-white py-2 font-weight-bold text-dark">
+                    <i class="ti-user mr-2 text-secondary"></i> Parent / Guardian Information
                 </div>
-                <div class="card-body">
+                <div class="card-body p-3">
                     <div class="row">
-                        <div class="col-md-6 mb-2"><strong>Name:</strong> <span id="view_guardian_name"></span></div>
+                        <div class="col-md-6 mb-2"><strong>Guardian Name:</strong> <span id="view_guardian_name"></span></div>
                         <div class="col-md-6 mb-2"><strong>Relationship:</strong> <span id="view_guardian_relationship"></span></div>
-                        <div class="col-md-6 mb-2"><strong>Phone:</strong> <span id="view_guardian_phone"></span></div>
-                        <div class="col-md-6 mb-2"><strong>Email:</strong> <span id="view_guardian_email"></span></div>
-                        <div class="col-12"><strong>Address:</strong> <span id="view_guardian_address"></span></div>
+                        <div class="col-md-6 mb-2"><strong>Phone Number:</strong> <span id="view_guardian_phone"></span></div>
+                        <div class="col-md-6 mb-2"><strong>Email Address:</strong> <span id="view_guardian_email"></span></div>
+                        <div class="col-12"><strong>Permanent Address:</strong> <span id="view_guardian_address"></span></div>
                     </div>
                 </div>
             </div>
+
+            <!-- Fee History Card -->
+            <div class="card border shadow-sm mb-0" style="border-radius: 10px;">
+                <div class="card-header bg-white py-2 font-weight-bold d-flex justify-content-between align-items-center">
+                    <span class="text-dark"><i class="ti-credit-card mr-2 text-success"></i> Fee History & Transactions</span>
+                    <span id="view_fee_count_badge" class="badge badge-success"></span>
+                </div>
+                <div class="card-body p-3">
+                    <div id="view_fee_history_wrapper"></div>
+                </div>
+            </div>
         </div>
-        <div class="modal-footer">
+        <div class="modal-footer bg-light py-2 px-4">
           <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
         </div>
     </div>
@@ -828,15 +983,47 @@ ob_start();
         padding: 35px 30px !important;
         border-radius: 12px !important;
     }
+    .smart-match-card {
+        transition: all 0.2s ease;
+        background: #f8fafc;
+        border-color: #cbd5e1 !important;
+    }
+    .smart-match-card:hover {
+        border-color: #6366f1 !important;
+        background: #f1f5f9;
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.08);
+    }
+    .smart-match-card.is-top-match {
+        border-color: #10b981 !important;
+        background: #f0fdf4;
+    }
+    .roommate-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 8px;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        font-size: 0.76rem;
+    }
+    .btn-xs {
+        padding: 3px 8px;
+        font-size: 0.75rem;
+        line-height: 1.2;
+        border-radius: 4px;
+    }
 </style>
 <script>
-// JSON Data for Cascading Dropdowns
+// JSON Data for Cascading Dropdowns & Occupant Matching
 const floorsData = <?= json_encode($all_floors) ?>;
 const roomsData = <?= json_encode($all_rooms) ?>;
 const bedsData = <?= json_encode($all_beds) ?>;
 const feeHistoryData = <?= json_encode($fee_history_by_student) ?>;
+const roomOccupantsData = <?= json_encode($room_occupants) ?>;
 
 let currentAllocBedId = null;
+let currentStudentId = null;
+let currentStudentLanguage = '';
 
 document.addEventListener("DOMContentLoaded", function() {
     if ($.fn.DataTable && !$.fn.DataTable.isDataTable('.datatable')) {
@@ -845,73 +1032,107 @@ document.addEventListener("DOMContentLoaded", function() {
         });
     }
 
+    // Helper formatting functions
+    function formatDateTime(dateStr) {
+        if (!dateStr || dateStr === '0000-00-00 00:00:00' || dateStr === '0000-00-00' || dateStr.trim() === '') {
+            return null;
+        }
+        var d = new Date(dateStr.replace(/-/g, "/"));
+        if (isNaN(d.getTime())) return dateStr;
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) + ', ' + 
+               d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+    }
+
+    function formatDate(dateStr) {
+        if (!dateStr || dateStr === '0000-00-00' || dateStr.trim() === '') {
+            return null;
+        }
+        var d = new Date(dateStr.replace(/-/g, "/"));
+        if (isNaN(d.getTime())) return dateStr;
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+
+    function normalizeRoomType(type) {
+        if (!type) return '';
+        var t = type.toLowerCase().trim();
+        return t === 'thriple' ? 'triple' : t;
+    }
+
+    function capitalizeText(str) {
+        if (!str) return '';
+        return str.charAt(0).toUpperCase() + str.slice(1);
+    }
+
     // View Modal Event Handler
     $(document).on('click', '.view-btn', function() {
+        var studentId = $(this).data('id');
         var name = $(this).data('name');
         var email = $(this).data('email');
         var phone = $(this).data('phone');
         var profileImage = $(this).data('profile_image');
         var status = $(this).data('status');
+        var createdAt = $(this).data('created_at');
+        var lastLogin = $(this).data('last_login');
 
-        var gName = $(this).data('guardian_name');
-        var gRel = $(this).data('guardian_relationship');
-        var gPhone = $(this).data('guardian_phone');
-        var gEmail = $(this).data('guardian_email');
-        var gAddr = $(this).data('guardian_address');
-
-        var docType = $(this).data('document_type');
-        var docNum = $(this).data('document_number');
-        var docFilePath = $(this).data('doc_file_path');
-        var verification = $(this).data('verification');
-        var docRemarks = $(this).data('doc_remarks');
-
-        var allocId = $(this).data('allocation_id');
-        var allocBlock = $(this).data('allocated_block_name');
-        var allocFloor = $(this).data('allocated_floor_name');
-        var allocRoom = $(this).data('allocated_room_number');
-        var allocRoomType = $(this).data('allocated_room_type');
-        var allocRoomPrice = $(this).data('allocated_room_price');
-        var allocBed = $(this).data('allocated_bed_number');
-        var allocDate = $(this).data('allocated_date');
-
+        // Header Info
+        $('#view_student_id_badge').text('#STU-' + studentId);
         $('#view_name').text(name);
-        $('#view_email').text(email);
-        $('#view_phone').text(phone);
+        $('#view_email').text(email).attr('href', 'mailto:' + email);
+        $('#view_phone').text(phone).attr('href', 'tel:' + phone);
+
+        var formattedCreatedAt = formatDateTime(createdAt);
+        $('#view_created_at').text(formattedCreatedAt ? formattedCreatedAt : 'N/A');
+
+        var formattedLastLogin = formatDateTime(lastLogin);
+        if (formattedLastLogin) {
+            $('#view_last_login').html(formattedLastLogin);
+        } else {
+            $('#view_last_login').html('<span class="text-muted font-italic">Never logged in</span>');
+        }
 
         if (profileImage && profileImage.trim() !== '') {
-            $('#view_profile_img_wrapper').html('<img src="../student_profile/' + profileImage + '" style="width: 70px; height: 70px; border-radius: 50%; object-fit: cover;" alt="Profile">');
+            $('#view_profile_img_wrapper').html('<img src="../student_profile/' + profileImage + '" style="width: 75px; height: 75px; border-radius: 50%; object-fit: cover; border: 3px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);" alt="Profile">');
         } else {
-            $('#view_profile_img_wrapper').html('<div style="width: 70px; height: 70px; border-radius: 50%; background: #e0e0e0; color: #666; display: flex; align-items: center; justify-content: center; font-size: 24px;"><i class="ti-user"></i></div>');
+            $('#view_profile_img_wrapper').html('<div style="width: 75px; height: 75px; border-radius: 50%; background: #f1f5f9; color: #64748b; display: inline-flex; align-items: center; justify-content: center; font-size: 28px; border: 3px solid #e2e8f0;"><i class="ti-user"></i></div>');
         }
 
         if (status === 'active') {
-            $('#view_account_status_badge').html('<span class="badge badge-success">Account Active</span>');
+            $('#view_account_status_badge').html('<span class="badge badge-success"><i class="ti-check mr-1"></i>Active</span>');
         } else {
-            $('#view_account_status_badge').html('<span class="badge badge-danger">Account Inactive</span>');
+            $('#view_account_status_badge').html('<span class="badge badge-danger"><i class="ti-close mr-1"></i>Inactive</span>');
         }
 
-        // Room Allocation Info in View Modal
-        if (allocId && allocId != '') {
-            var priceText = allocRoomPrice ? ' &bull; <span class="text-success font-weight-bold">₹' + Number(allocRoomPrice).toLocaleString('en-IN') + '</span>' : '';
-            $('#view_allocation_wrapper').html(
-                '<div class="row">' +
-                    '<div class="col-md-6 mb-2"><strong>Block & Floor:</strong> ' + allocBlock + ' (' + allocFloor + ')</div>' +
-                    '<div class="col-md-6 mb-2"><strong>Room:</strong> Room ' + allocRoom + (allocRoomType ? ' (' + allocRoomType + ')' : '') + priceText + '</div>' +
-                    '<div class="col-md-6 mb-2"><strong>Bed Number:</strong> <span class="badge badge-primary font-weight-bold">Bed ' + allocBed + '</span></div>' +
-                    '<div class="col-md-6 mb-2"><strong>Allocated Date:</strong> ' + (allocDate ? allocDate : 'N/A') + '</div>' +
-                '</div>'
-            );
+        // Registration Preferences
+        var prefRoomType = $(this).data('pref_room_type');
+        var prefLanguage = $(this).data('pref_language');
+        var prefFloorType = $(this).data('pref_floor_type');
+
+        var roomTypeFormatted = prefRoomType ? capitalizeText(prefRoomType) : '<span class="text-muted font-italic">Not specified</span>';
+        var floorTypeFormatted = prefFloorType ? capitalizeText(prefFloorType) + ' Floor' : '<span class="text-muted font-italic">Not specified</span>';
+        var languageFormatted = '';
+
+        if (prefRoomType && prefRoomType.toLowerCase() === 'single') {
+            languageFormatted = '<span class="badge badge-light border text-muted">Not applicable (Single Room)</span>';
+        } else if (prefLanguage) {
+            languageFormatted = '<span class="badge badge-light border font-weight-bold" style="color: #6366f1;">' + capitalizeText(prefLanguage) + '</span>';
         } else {
-            $('#view_allocation_wrapper').html('<span class="text-muted font-italic">No active room or bed allocated to this student.</span>');
+            languageFormatted = '<span class="text-muted font-italic">Not specified</span>';
         }
 
-        $('#view_guardian_name').text(gName ? gName : 'Not provided');
-        $('#view_guardian_relationship').text(gRel ? gRel : 'N/A');
-        $('#view_guardian_phone').text(gPhone ? gPhone : 'N/A');
-        $('#view_guardian_email').text(gEmail ? gEmail : 'N/A');
-        $('#view_guardian_address').text(gAddr ? gAddr : 'N/A');
+        $('#view_pref_room_type').html(prefRoomType ? '<span class="badge badge-light border text-primary font-weight-bold"><i class="ti-home mr-1"></i>' + roomTypeFormatted + '</span>' : roomTypeFormatted);
+        $('#view_pref_floor_type').html(prefFloorType ? '<span class="badge badge-light border text-info font-weight-bold"><i class="ti-layers mr-1"></i>' + floorTypeFormatted + '</span>' : floorTypeFormatted);
+        $('#view_pref_language').html(languageFormatted);
 
-        $('#view_document_type').text(docType ? docType : 'Not provided');
+        // Document & Verification Details
+        var docType = $(this).data('document_type');
+        var docNum = $(this).data('document_number');
+        var docFilePath = $(this).data('doc_file_path');
+        var verification = ($(this).data('verification') || 'pending').toLowerCase();
+        var verifiedByName = $(this).data('verified_by_name');
+        var verifiedAt = $(this).data('verified_at');
+        var docRemarks = $(this).data('doc_remarks');
+
+        $('#view_document_type').text(docType ? docType : 'Not specified');
         $('#view_document_number').text(docNum ? docNum : 'N/A');
 
         if (verification === 'verified') {
@@ -919,23 +1140,139 @@ document.addEventListener("DOMContentLoaded", function() {
         } else if (verification === 'rejected') {
             $('#view_verification_badge').html('<span class="badge badge-danger"><i class="ti-close mr-1"></i>Rejected</span>');
         } else {
-            $('#view_verification_badge').html('<span class="badge badge-warning"><i class="ti-time mr-1"></i>Pending</span>');
+            $('#view_verification_badge').html('<span class="badge badge-warning"><i class="ti-time mr-1"></i>Pending Verification</span>');
+        }
+
+        var formattedVerifiedAt = formatDateTime(verifiedAt);
+        if (verification === 'verified') {
+            $('#view_verified_by').html(verifiedByName ? ('<span class="font-weight-medium">' + verifiedByName + '</span>') : '<span class="text-muted">Administrator</span>');
+            $('#view_verified_at').html(formattedVerifiedAt ? formattedVerifiedAt : 'N/A');
+            $('#view_verified_by_col').show();
+            $('#view_verified_at_col').show();
+        } else {
+            $('#view_verified_by').text('N/A');
+            $('#view_verified_at').text('N/A');
+            $('#view_verified_by_col').hide();
+            $('#view_verified_at_col').hide();
         }
 
         if (docFilePath && docFilePath.trim() !== '') {
-            $('#view_doc_file_wrapper').html('<a href="../student_docs/' + docFilePath + '" target="_blank" class="btn btn-sm btn-outline-primary"><i class="ti-file mr-1"></i> View Attached Document</a>');
+            $('#view_doc_file_wrapper').html('<a href="../student_docs/' + docFilePath + '" target="_blank" class="btn btn-sm btn-outline-primary"><i class="ti-file mr-1"></i> View / Download Document (' + docFilePath + ')</a>');
         } else {
-            $('#view_doc_file_wrapper').html('<span class="text-muted font-italic">No document file attached</span>');
+            $('#view_doc_file_wrapper').html('<span class="text-danger small font-italic"><i class="ti-alert mr-1"></i> No document file uploaded</span>');
         }
 
-        $('#view_doc_remarks').text(docRemarks ? docRemarks : 'None');
+        // Receipt in View Modal
+        var receipt = $(this).data('receipt');
+        if (receipt && receipt.trim() !== '') {
+            var ext = receipt.split('.').pop().toLowerCase();
+            var isImg = ['jpg', 'jpeg', 'png', 'gif', 'webp'].indexOf(ext) !== -1;
+            var html = '<a href="../student_docs/' + receipt + '" target="_blank" class="btn btn-sm btn-outline-success"><i class="ti-receipt mr-1"></i> View Receipt (' + receipt + ')</a>';
+            if (isImg) {
+                html += '<div class="mt-2"><a href="../student_docs/' + receipt + '" target="_blank"><img src="../student_docs/' + receipt + '" style="max-height: 140px; max-width: 100%; border-radius: 6px; border: 1px solid #ddd; object-fit: contain;" alt="Receipt Preview"></a></div>';
+            }
+            $('#view_receipt_file_wrapper').html(html);
+        } else {
+            $('#view_receipt_file_wrapper').html('<span class="text-muted small font-italic"><i class="ti-info-alt mr-1"></i> No receipt uploaded</span>');
+        }
+
+        $('#view_doc_remarks').text(docRemarks ? docRemarks : 'None provided');
+
+        // Room Allocation Info in View Modal
+        var allocId = $(this).data('allocation_id');
+        var roomId = parseInt($(this).data('room_id') || 0);
+        var allocBlock = $(this).data('allocated_block_name');
+        var allocFloor = $(this).data('allocated_floor_name');
+        var allocRoom = $(this).data('allocated_room_number');
+        var allocRoomType = $(this).data('allocated_room_type');
+        var allocRoomPrice = $(this).data('allocated_room_price');
+        var allocBed = $(this).data('allocated_bed_number');
+        var allocDate = $(this).data('allocated_date');
+        var allocatorName = $(this).data('allocator_name');
+        var allocRemarks = $(this).data('alloc_remarks');
+
+        var currentStudentId = parseInt(studentId || 0);
+        var roommates = [];
+        if (roomId > 0 && typeof roomOccupantsData !== 'undefined' && roomOccupantsData[roomId]) {
+            roommates = roomOccupantsData[roomId].filter(function(occ) {
+                return parseInt(occ.student_id) !== currentStudentId;
+            });
+        }
+
+        if (allocId && allocId != '') {
+            $('#view_allocation_status_badge').html('<span class="badge badge-success"><i class="ti-check mr-1"></i>Allocated</span>');
+            var priceText = allocRoomPrice ? '<span class="text-success font-weight-bold">₹' + Number(allocRoomPrice).toLocaleString('en-IN') + ' / month</span>' : 'N/A';
+            var formattedAllocDate = formatDate(allocDate) || allocDate || 'N/A';
+            
+            var allocHtml = '<div class="row">' +
+                '<div class="col-md-6 mb-2"><strong>Block & Floor:</strong> <span class="text-dark">' + allocBlock + ' (' + allocFloor + ')</span></div>' +
+                '<div class="col-md-6 mb-2"><strong>Room:</strong> <span class="font-weight-medium">Room ' + allocRoom + (allocRoomType ? ' (' + capitalizeText(allocRoomType) + ')' : '') + '</span></div>' +
+                '<div class="col-md-6 mb-2"><strong>Bed Number:</strong> <span class="badge badge-primary font-weight-bold px-2 py-1">Bed ' + allocBed + '</span></div>' +
+                '<div class="col-md-6 mb-2"><strong>Room Price:</strong> ' + priceText + '</div>' +
+                '<div class="col-md-6 mb-2"><strong>Allocated Date:</strong> <span class="text-dark">' + formattedAllocDate + '</span></div>' +
+                '<div class="col-md-6 mb-2"><strong>Allocated By:</strong> <span class="text-dark">' + (allocatorName ? allocatorName : 'Hostel Administration') + '</span></div>' +
+                '<div class="col-12 mb-2"><strong>Allocation Remarks:</strong> <span class="text-muted">' + (allocRemarks ? allocRemarks : 'None') + '</span></div>' +
+            '</div>';
+
+            // Roommates logic
+            if (roommates && roommates.length > 0) {
+                allocHtml += '<div class="mt-3 pt-3 border-top">' +
+                    '<strong class="d-block mb-2 text-dark small"><i class="ti-user mr-1 text-primary"></i> Other Roommates in Room ' + allocRoom + ' (' + roommates.length + '):</strong>' +
+                    '<div class="table-responsive">' +
+                        '<table class="table table-sm table-bordered mb-0 bg-white">' +
+                            '<thead class="bg-light">' +
+                                '<tr><th>Bed</th><th>Roommate Name</th><th>Contact</th><th>Language</th><th>Allocated Date</th></tr>' +
+                            '</thead>' +
+                            '<tbody>';
+                roommates.forEach(function(rm) {
+                    var rmDate = formatDate(rm.allocated_date) || rm.allocated_date || 'N/A';
+                    allocHtml += '<tr>' +
+                        '<td><span class="badge badge-info font-weight-bold">Bed ' + rm.bed_number + '</span></td>' +
+                        '<td><strong>' + rm.student_name + '</strong></td>' +
+                        '<td>' + (rm.student_phone ? ('<a href="tel:' + rm.student_phone + '" class="text-dark"><i class="ti-mobile mr-1 text-muted"></i>' + rm.student_phone + '</a>') : (rm.student_email ? ('<a href="mailto:' + rm.student_email + '"><i class="ti-email mr-1 text-muted"></i>' + rm.student_email + '</a>') : 'N/A')) + '</td>' +
+                        '<td>' + (rm.student_language ? '<span class="badge badge-light border" style="color: #6366f1;">' + capitalizeText(rm.student_language) + '</span>' : '<span class="text-muted">N/A</span>') + '</td>' +
+                        '<td><small class="text-muted">' + rmDate + '</small></td>' +
+                    '</tr>';
+                });
+                allocHtml += '</tbody></table></div></div>';
+            } else {
+                allocHtml += '<div class="mt-2 pt-2 border-top">' +
+                    '<small class="text-muted"><i class="ti-info-alt mr-1"></i> No other roommates currently in this room (remaining beds are vacant).</small>' +
+                '</div>';
+            }
+
+            $('#view_allocation_wrapper').html(allocHtml);
+        } else {
+            $('#view_allocation_status_badge').html('<span class="badge badge-secondary">Not Allocated</span>');
+            $('#view_allocation_wrapper').html('<div class="p-3 bg-light rounded text-center text-muted"><i class="ti-home mr-1 text-secondary" style="font-size: 22px;"></i><p class="mb-0 mt-2 small font-weight-medium">No active room or bed allocated to this student yet.</p></div>');
+        }
+
+        // Guardian Details
+        var gName = $(this).data('guardian_name');
+        var gRel = $(this).data('guardian_relationship');
+        var gPhone = $(this).data('guardian_phone');
+        var gEmail = $(this).data('guardian_email');
+        var gAddr = $(this).data('guardian_address');
+
+        $('#view_guardian_name').text(gName ? gName : 'Not provided');
+        $('#view_guardian_relationship').text(gRel ? gRel : 'N/A');
+        if (gPhone) {
+            $('#view_guardian_phone').html('<a href="tel:' + gPhone + '" class="text-dark"><i class="ti-mobile mr-1 text-muted"></i>' + gPhone + '</a>');
+        } else {
+            $('#view_guardian_phone').text('N/A');
+        }
+        if (gEmail) {
+            $('#view_guardian_email').html('<a href="mailto:' + gEmail + '"><i class="ti-email mr-1 text-muted"></i>' + gEmail + '</a>');
+        } else {
+            $('#view_guardian_email').text('N/A');
+        }
+        $('#view_guardian_address').text(gAddr ? gAddr : 'Not provided');
 
         // Render Fee History in View Modal
-        var studentId = $(this).data('id');
         var studentFees = (typeof feeHistoryData !== 'undefined' && feeHistoryData[studentId]) ? feeHistoryData[studentId] : [];
         if (studentFees && studentFees.length > 0) {
             $('#view_fee_count_badge').text(studentFees.length + (studentFees.length === 1 ? ' Record' : ' Records')).show();
-            var feeHtml = '<div class="table-responsive"><table class="table table-bordered table-sm table-hover mb-0">';
+            var feeHtml = '<div class="table-responsive"><table class="table table-bordered table-sm table-hover mb-0 bg-white">';
             feeHtml += '<thead class="bg-light"><tr><th style="width: 50px;">#</th><th>Fee Amount</th><th>Allocation / Fee Date</th><th>Logged Timestamp</th><th>Status</th></tr></thead><tbody>';
             studentFees.forEach(function(item, idx) {
                 feeHtml += '<tr>' +
@@ -995,6 +1332,21 @@ document.addEventListener("DOMContentLoaded", function() {
         } else {
             $('#verify_doc_file_wrapper').html('<span class="text-danger font-italic small"><i class="ti-alert mr-1"></i> No document file uploaded by student.</span>');
         }
+
+        // Receipt in Verify Modal
+        var receipt = $(this).data('receipt');
+        if (receipt && receipt.trim() !== '') {
+            var ext = receipt.split('.').pop().toLowerCase();
+            var isImg = ['jpg', 'jpeg', 'png', 'gif', 'webp'].indexOf(ext) !== -1;
+            var rHtml = '<div class="p-2 border rounded bg-white mt-2"><strong>Fee / Payment Receipt:</strong><br><a href="../student_docs/' + receipt + '" target="_blank" class="btn btn-outline-success btn-sm mt-1"><i class="ti-receipt mr-1"></i> View / Download Receipt (' + receipt + ')</a>';
+            if (isImg) {
+                rHtml += '<div class="mt-2"><a href="../student_docs/' + receipt + '" target="_blank"><img src="../student_docs/' + receipt + '" style="max-height: 120px; max-width: 100%; border-radius: 6px; border: 1px solid #ddd; object-fit: contain;" alt="Receipt Preview"></a></div>';
+            }
+            rHtml += '</div>';
+            $('#verify_receipt_file_wrapper').html(rHtml);
+        } else {
+            $('#verify_receipt_file_wrapper').html('<div class="p-2 border rounded bg-white mt-2 text-muted small font-italic"><i class="ti-alert mr-1"></i> No fee receipt uploaded by student.</div>');
+        }
     });
 
     // Approve Button Click
@@ -1008,6 +1360,90 @@ document.addEventListener("DOMContentLoaded", function() {
         $('#verify_status_input').val('rejected');
         $('#verifyForm').submit();
     });
+
+    // Check Roommate Language Match
+    function getLanguageMatchInfo(studentLang, roommateLang) {
+        var sLang = (studentLang || '').toLowerCase().trim();
+        var rLang = (roommateLang || '').toLowerCase().trim();
+
+        if (!sLang || sLang === 'single') {
+            return { isMatch: true, badge: '<span class="badge badge-light border text-muted" style="font-size: 0.72rem;">No language constraint</span>' };
+        }
+        if (sLang === 'all laguage set' || sLang === 'all language set' || rLang === 'all laguage set' || rLang === 'all language set') {
+            return { isMatch: true, badge: '<span class="badge badge-info" style="font-size: 0.72rem;"><i class="ti-check mr-1"></i>All Languages Compatible</span>' };
+        }
+        if (sLang === rLang) {
+            return { isMatch: true, badge: '<span class="badge badge-success" style="font-size: 0.72rem;"><i class="ti-check mr-1"></i>Language Match (' + capitalizeText(rLang) + ')</span>' };
+        }
+        if (!rLang) {
+            return { isMatch: true, badge: '<span class="badge badge-light border text-muted" style="font-size: 0.72rem;">Roommate Language Not Set</span>' };
+        }
+        return { isMatch: false, badge: '<span class="badge badge-warning text-dark" style="font-size: 0.72rem;"><i class="ti-info-alt mr-1"></i>Different Language (' + capitalizeText(rLang) + ')</span>' };
+    }
+
+    // Render Selected Room Occupants & Bed Availability in Cascading Form
+    function renderSelectedRoomOccupants(roomId, studentId, studentLang) {
+        var $container = $('#alloc_selected_room_occupants_box');
+        if (!roomId) {
+            $container.html('');
+            return;
+        }
+
+        var room = roomsData.find(r => r.id == roomId);
+        if (!room) {
+            $container.html('');
+            return;
+        }
+
+        var allBedsInRoom = bedsData.filter(b => b.room_id == roomId);
+        var availBeds = bedsData.filter(b => b.room_id == roomId && (b.status === 'available' || b.id == currentAllocBedId));
+        var occupants = (roomOccupantsData[roomId] || []).filter(o => o.student_id != studentId);
+
+        var roomTypeLabel = room.room_type ? capitalizeText(room.room_type) : 'Standard';
+        var isSingleRoom = normalizeRoomType(room.room_type) === 'single';
+
+        var html = '<div class="card border p-3 shadow-none mt-2" style="background: #ffffff; border-radius: 8px; border-color: #cbd5e1 !important;">';
+        html += '<div class="d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom">';
+        html += '<div><strong><i class="ti-home mr-1 text-primary"></i> Room ' + room.room_number + ' (' + roomTypeLabel + ')</strong>' +
+                ' &bull; <small class="text-muted">' + (room.floor_name || '') + '</small></div>';
+        
+        if (availBeds.length > 0) {
+            html += '<span class="badge badge-success"><i class="ti-check mr-1"></i>' + availBeds.length + ' of ' + allBedsInRoom.length + ' Bed(s) Available</span>';
+        } else {
+            html += '<span class="badge badge-danger"><i class="ti-close mr-1"></i>Full (0 Beds Available)</span>';
+        }
+        html += '</div>';
+
+        // Roommate / Other Students Section
+        html += '<div class="mb-1"><small class="font-weight-bold text-dark"><i class="ti-user mr-1 text-info"></i> Roommates / Other Students in Room (' + occupants.length + '):</small></div>';
+        
+        if (occupants.length > 0) {
+            html += '<div class="list-group list-group-flush">';
+            occupants.forEach(function(occ) {
+                var langMatch = getLanguageMatchInfo(studentLang, occ.student_language);
+                html += '<div class="list-group-item px-2 py-2 d-flex justify-content-between align-items-center bg-light rounded mb-1 border">';
+                html += '<div>';
+                html += '<strong class="text-dark">' + occ.student_name + '</strong>';
+                html += '<small class="text-muted ml-2"><i class="ti-layout-grid2 mr-1"></i>Bed ' + occ.bed_number + '</small>';
+                if (occ.student_phone) {
+                    html += '<small class="text-muted ml-2"><i class="ti-mobile mr-1"></i>' + occ.student_phone + '</small>';
+                }
+                html += '</div>';
+                html += '<div>' + langMatch.badge + '</div>';
+                html += '</div>';
+            });
+            html += '</div>';
+        } else {
+            if (isSingleRoom) {
+                html += '<div class="p-2 bg-light rounded text-muted small"><i class="ti-check mr-1 text-success"></i> Single Room &mdash; Private room with no roommates.</div>';
+            } else {
+                html += '<div class="p-2 bg-light rounded text-muted small"><i class="ti-info-alt mr-1 text-secondary"></i> Fresh Room &mdash; No other students currently allocated in this room.</div>';
+            }
+        }
+
+        html += '</div>';
+        $container.html(html);
+    }
 
     // Cascading Dropdown Handlers
     function populateFloors(blockId, selectedFloorId = null) {
@@ -1032,6 +1468,7 @@ document.addEventListener("DOMContentLoaded", function() {
         let $roomSelect = $('#alloc_room_id');
         $roomSelect.html('<option value="">Select Room</option>');
         $('#alloc_room_price_info').html('');
+        $('#alloc_selected_room_occupants_box').html('');
         
         if (!floorId) {
             $roomSelect.prop('disabled', true);
@@ -1041,10 +1478,15 @@ document.addEventListener("DOMContentLoaded", function() {
         const filteredRooms = roomsData.filter(r => r.floor_id == floorId);
         filteredRooms.forEach(r => {
             const sel = (selectedRoomId && r.id == selectedRoomId) ? 'selected' : '';
-            const typeStr = r.room_type ? ' (' + r.room_type.charAt(0).toUpperCase() + r.room_type.slice(1) + ')' : '';
+            const typeStr = r.room_type ? ' (' + capitalizeText(r.room_type) + ')' : '';
             const priceVal = r.price ? Number(r.price) : 0;
             const priceStr = priceVal > 0 ? ' - ₹' + priceVal.toLocaleString('en-IN') : '';
-            $roomSelect.append('<option value="' + r.id + '" data-price="' + priceVal + '" ' + sel + '>Room ' + r.room_number + typeStr + priceStr + '</option>');
+
+            // Calculate free beds
+            const availBedsCount = bedsData.filter(b => b.room_id == r.id && (b.status === 'available' || b.id == currentAllocBedId)).length;
+            const availStr = availBedsCount > 0 ? ' [' + availBedsCount + ' bed(s) free]' : ' [FULL]';
+
+            $roomSelect.append('<option value="' + r.id + '" data-price="' + priceVal + '" ' + sel + '>Room ' + r.room_number + typeStr + availStr + priceStr + '</option>');
         });
 
         $roomSelect.prop('disabled', false);
@@ -1055,6 +1497,7 @@ document.addEventListener("DOMContentLoaded", function() {
             if (price) {
                 $('#alloc_room_price_info').html('<i class="ti-tag mr-1 text-success"></i>Room Price: <strong class="text-success">₹' + Number(price).toLocaleString('en-IN') + '</strong> (recorded in fee history)');
             }
+            renderSelectedRoomOccupants(selectedRoomId, currentStudentId, currentStudentLanguage);
         }
     }
 
@@ -1086,15 +1529,18 @@ document.addEventListener("DOMContentLoaded", function() {
         $('#alloc_room_id').html('<option value="">Select Floor first</option>').prop('disabled', true);
         $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
         $('#alloc_room_price_info').html('');
+        $('#alloc_selected_room_occupants_box').html('');
     });
 
     $('#alloc_floor_id').on('change', function() {
         populateRooms($(this).val());
         $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
+        $('#alloc_selected_room_occupants_box').html('');
     });
 
     $('#alloc_room_id').on('change', function() {
-        populateBeds($(this).val(), currentAllocBedId);
+        var rId = $(this).val();
+        populateBeds(rId, currentAllocBedId);
         var selectedOpt = $(this).find('option:selected');
         var price = selectedOpt.data('price');
         if (price) {
@@ -1102,14 +1548,22 @@ document.addEventListener("DOMContentLoaded", function() {
         } else {
             $('#alloc_room_price_info').html('');
         }
+        renderSelectedRoomOccupants(rId, currentStudentId, currentStudentLanguage);
     });
 
-    // Open Allocation Modal
+    // Open Allocation Modal with Preference Check, Roommate Reference & Auto-Allocation
     $(document).on('click', '.allocate-btn', function() {
         var studentId = $(this).data('student_id');
         var name = $(this).data('name');
         var email = $(this).data('email');
         var phone = $(this).data('phone');
+
+        var prefRoomType = ($(this).data('pref_room_type') || '').trim();
+        var prefLanguage = ($(this).data('pref_language') || '').trim();
+        var prefFloorType = ($(this).data('pref_floor_type') || '').trim();
+
+        currentStudentId = studentId;
+        currentStudentLanguage = prefLanguage;
 
         var allocId = $(this).data('allocation_id');
         var blockId = $(this).data('block_id');
@@ -1133,14 +1587,138 @@ document.addEventListener("DOMContentLoaded", function() {
         $('#alloc_remarks').val(allocRemarks ? allocRemarks : '');
         $('#alloc_date').val(allocDate ? allocDate : new Date().toISOString().split('T')[0]);
 
+        // Display Student Allocation Preferences
+        $('#alloc_pref_room_type').text(prefRoomType ? capitalizeText(prefRoomType) : 'Not Specified');
+        $('#alloc_pref_floor_type').text(prefFloorType ? capitalizeText(prefFloorType) : 'Not Specified');
+        $('#alloc_pref_language').text(prefLanguage ? capitalizeText(prefLanguage) : (prefRoomType.toLowerCase() === 'single' ? 'Not applicable (Single Room)' : 'Not Specified'));
+
         // Clear error text
         $('#alloc_block_err').text('');
         $('#alloc_floor_err').text('');
         $('#alloc_room_err').text('');
         $('#alloc_bed_err').text('');
         $('#alloc_date_err').text('');
+        $('#alloc_selected_room_occupants_box').html('');
 
+        // Find and evaluate matching rooms & roommates
+        var evaluatedRooms = [];
+        roomsData.forEach(function(r) {
+            var availBeds = bedsData.filter(b => b.room_id == r.id && (b.status === 'available' || b.id == currentAllocBedId));
+            var occupants = (roomOccupantsData[r.id] || []).filter(o => o.student_id != studentId);
+
+            // Check room type match
+            var isTypeMatch = !prefRoomType || (normalizeRoomType(r.room_type) === normalizeRoomType(prefRoomType));
+
+            // Check floor match
+            var isFloorMatch = !prefFloorType;
+            if (prefFloorType) {
+                var pf = prefFloorType.toLowerCase();
+                var rfNumber = parseInt(r.floor_number);
+                var rfName = (r.floor_name || '').toLowerCase();
+                if (pf === 'ground') {
+                    isFloorMatch = (rfNumber === 0 || rfName.includes('ground'));
+                } else if (pf === '1st') {
+                    isFloorMatch = (rfNumber === 1 || rfName.includes('1') || rfName.includes('first'));
+                } else if (pf === '2nd') {
+                    isFloorMatch = (rfNumber === 2 || rfName.includes('2') || rfName.includes('second'));
+                } else {
+                    isFloorMatch = rfName.includes(pf);
+                }
+            }
+
+            // Check language compatibility with current roommates
+            var hasLangMatch = false;
+            if (occupants.length > 0) {
+                occupants.forEach(function(occ) {
+                    if (getLanguageMatchInfo(prefLanguage, occ.student_language).isMatch) {
+                        hasLangMatch = true;
+                    }
+                });
+            } else {
+                hasLangMatch = true; // fresh room is compatible
+            }
+
+            evaluatedRooms.push({
+                room: r,
+                availBeds: availBeds,
+                occupants: occupants,
+                isTypeMatch: isTypeMatch,
+                isFloorMatch: isFloorMatch,
+                hasLangMatch: hasLangMatch,
+                isPerfectMatch: isTypeMatch && isFloorMatch && availBeds.length > 0
+            });
+        });
+
+        // Filter recommendations
+        var recommendedRooms = evaluatedRooms.filter(item => item.isPerfectMatch);
+        if (recommendedRooms.length === 0) {
+            // Fallback: match room_type and available beds
+            recommendedRooms = evaluatedRooms.filter(item => item.isTypeMatch && item.availBeds.length > 0);
+        }
+        if (recommendedRooms.length === 0) {
+            // Fallback: any room with available beds
+            recommendedRooms = evaluatedRooms.filter(item => item.availBeds.length > 0);
+        }
+
+        // Render Smart Recommendations Box
+        if (recommendedRooms.length > 0) {
+            var recHtml = '<div class="card border mb-3 shadow-none" style="border-radius: 10px; background: #ffffff;">';
+            recHtml += '<div class="card-header bg-light py-2 d-flex justify-content-between align-items-center">';
+            recHtml += '<span class="font-weight-bold text-dark small"><i class="ti-light-bulb mr-1 text-warning"></i> Smart Room Recommendations & Roommate References:</span>';
+            recHtml += '<span class="badge badge-primary small">' + recommendedRooms.length + ' Available Match(es)</span>';
+            recHtml += '</div>';
+            recHtml += '<div class="card-body p-2" style="max-height: 240px; overflow-y: auto;">';
+
+            recommendedRooms.forEach(function(item) {
+                var r = item.room;
+                var availBeds = item.availBeds;
+                var occupants = item.occupants;
+
+                recHtml += '<div class="p-2 mb-2 rounded border smart-match-card ' + (item.isPerfectMatch ? 'is-top-match' : '') + '">';
+                recHtml += '<div class="d-flex justify-content-between align-items-center">';
+                recHtml += '<div>';
+                recHtml += '<strong class="text-primary" style="font-size: 0.95rem;">Room ' + r.room_number + '</strong> ';
+                recHtml += '<span class="badge badge-light border text-dark font-weight-normal">' + capitalizeText(r.room_type) + '</span> ';
+                recHtml += '<small class="text-muted font-weight-medium">' + (r.block_name || '') + ' &bull; ' + (r.floor_name || '') + '</small> ';
+                recHtml += '<span class="badge badge-success ml-1"><i class="ti-check mr-1"></i>' + availBeds.length + ' Bed(s) Available</span>';
+                recHtml += '</div>';
+
+                // Auto-fill button
+                var firstBedId = availBeds[0] ? availBeds[0].id : '';
+                recHtml += '<button type="button" class="btn btn-xs btn-outline-success font-weight-bold btn-auto-fill-room" ' +
+                           'data-block="' + r.block_id + '" data-floor="' + r.floor_id + '" data-room="' + r.id + '" data-bed="' + firstBedId + '">' +
+                           '<i class="ti-arrow-down mr-1"></i>Select & Auto-fill</button>';
+                recHtml += '</div>';
+
+                // Roommate Reference info
+                if (occupants.length > 0) {
+                    recHtml += '<div class="mt-1 pt-1 border-top small">';
+                    recHtml += '<span class="text-muted mr-1"><i class="ti-user mr-1 text-info"></i><strong>Current Roommate(s):</strong></span> ';
+                    occupants.forEach(function(occ) {
+                        var matchInfo = getLanguageMatchInfo(prefLanguage, occ.student_language);
+                        recHtml += '<span class="roommate-pill mr-2"><strong>' + occ.student_name + '</strong> (Bed ' + occ.bed_number + ') &bull; Lang: ' + (occ.student_language ? capitalizeText(occ.student_language) : 'N/A') + ' ' + matchInfo.badge + '</span> ';
+                    });
+                    recHtml += '</div>';
+                } else {
+                    recHtml += '<div class="mt-1 text-muted small"><i class="ti-home mr-1"></i>No current occupants (Empty Room).</div>';
+                }
+
+                recHtml += '</div>';
+            });
+
+            recHtml += '</div></div>';
+            $('#alloc_smart_matches_box').html(recHtml);
+        } else {
+            $('#alloc_smart_matches_box').html(
+                '<div class="alert alert-warning py-2 px-3 mb-3 rounded small">' +
+                '<i class="ti-alert mr-1"></i> <strong>No rooms with available beds found matching preferences.</strong> Please create/free rooms or manually choose a room below.' +
+                '</div>'
+            );
+        }
+
+        // Auto-fill and load logic
         if (allocId && allocId != '') {
+            // Already allocated: show status
             $('#alloc_current_status_box').html(
                 '<div class="alert alert-info py-2 px-3 mb-0 d-flex justify-content-between align-items-center rounded">' +
                     '<div>' +
@@ -1156,19 +1734,61 @@ document.addEventListener("DOMContentLoaded", function() {
             populateFloors(blockId, floorId);
             populateRooms(floorId, roomId);
             populateBeds(roomId, bedId);
+            renderSelectedRoomOccupants(roomId, studentId, prefLanguage);
         } else {
-            $('#alloc_current_status_box').html(
-                '<div class="alert alert-secondary py-2 px-3 mb-0 rounded text-muted font-italic">' +
-                    '<small><i class="ti-info-alt mr-1"></i> Student currently has no active room/bed allocation.</small>' +
-                '</div>'
-            );
             $('#alloc_submit_btn').text('Allocate Room');
 
-            $('#alloc_block_id').val('');
-            $('#alloc_floor_id').html('<option value="">Select Block first</option>').prop('disabled', true);
-            $('#alloc_room_id').html('<option value="">Select Floor first</option>').prop('disabled', true);
-            $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
+            // Auto-fill with top matching room if available
+            var topMatch = (recommendedRooms.length > 0) ? recommendedRooms[0] : null;
+
+            if (topMatch && topMatch.availBeds.length > 0) {
+                var r = topMatch.room;
+                var b = topMatch.availBeds[0];
+
+                $('#alloc_current_status_box').html(
+                    '<div class="alert alert-success py-2 px-3 mb-2 rounded small">' +
+                        '<i class="ti-check mr-1 text-success"></i> <strong>Auto-filled based on preferences:</strong> ' +
+                        'Room <strong>' + r.room_number + '</strong> (' + capitalizeText(r.room_type) + ', ' + (r.floor_name || '') + ') &bull; Bed <strong>' + b.bed_number + '</strong> is available!' +
+                    '</div>'
+                );
+
+                $('#alloc_block_id').val(r.block_id);
+                populateFloors(r.block_id, r.floor_id);
+                populateRooms(r.floor_id, r.id);
+                populateBeds(r.id, b.id);
+                renderSelectedRoomOccupants(r.id, studentId, prefLanguage);
+            } else {
+                $('#alloc_current_status_box').html(
+                    '<div class="alert alert-secondary py-2 px-3 mb-0 rounded text-muted font-italic">' +
+                        '<small><i class="ti-info-alt mr-1"></i> Student currently has no active room/bed allocation.</small>' +
+                    '</div>'
+                );
+                $('#alloc_block_id').val('');
+                $('#alloc_floor_id').html('<option value="">Select Block first</option>').prop('disabled', true);
+                $('#alloc_room_id').html('<option value="">Select Floor first</option>').prop('disabled', true);
+                $('#alloc_bed_id').html('<option value="">Select Room first</option>').prop('disabled', true);
+            }
         }
+    });
+
+    // Quick Auto-fill button click from smart match card
+    $(document).on('click', '.btn-auto-fill-room', function() {
+        var bId = $(this).data('block');
+        var fId = $(this).data('floor');
+        var rId = $(this).data('room');
+        var bdId = $(this).data('bed');
+
+        $('#alloc_block_id').val(bId);
+        populateFloors(bId, fId);
+        populateRooms(fId, rId);
+        populateBeds(rId, bdId);
+        renderSelectedRoomOccupants(rId, currentStudentId, currentStudentLanguage);
+
+        // Highlight inputs briefly
+        $('#alloc_room_id, #alloc_bed_id').addClass('border-success');
+        setTimeout(function() {
+            $('#alloc_room_id, #alloc_bed_id').removeClass('border-success');
+        }, 1500);
     });
 
     // Validate Allocation Form

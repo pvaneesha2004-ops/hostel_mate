@@ -107,8 +107,14 @@ function getGeofenceDistanceMeters($lat1, $lon1, $lat2, $lon2) {
 }
 
 function formatAttendanceStatusText($status_val, $created_at, $att_end_time = '21:30:00') {
+    $clean_status = strtolower(trim($status_val));
+    // If status is absent, leave, or outing, return proper capitalized status immediately
+    if (in_array($clean_status, ['absent', 'leave', 'outing'])) {
+        return ucfirst($clean_status);
+    }
+
     $fallback_end_time = !empty($att_end_time) ? $att_end_time : '21:30:00';
-    $is_late_status = (stripos($status_val, 'Late') !== false);
+    $is_late_status = ($clean_status === 'late' || stripos($status_val, 'Late') !== false);
     
     if (!empty($created_at)) {
         $created_timestamp = strtotime($created_at);
@@ -138,7 +144,7 @@ function formatAttendanceStatusText($status_val, $created_at, $att_end_time = '2
     if ($is_late_status) {
         return 'Late';
     }
-    return $status_val;
+    return ucfirst($clean_status);
 }
 
 // Handle Add / Mark Attendance Submission
@@ -205,14 +211,14 @@ $selected_status = isset($_GET['status']) ? trim($_GET['status']) : 'all';
 // Build Query
 $where_clauses = ["`student_id` = {$student_id}"];
 
-if (!empty($selected_month)) {
+if (!empty($selected_month) && $selected_month !== 'all') {
     $safe_month = $conn->real_escape_string($selected_month);
     $where_clauses[] = "DATE_FORMAT(`attendance_date`, '%Y-%m') = '{$safe_month}'";
 }
 
 if (!empty($selected_status) && $selected_status !== 'all') {
     $safe_status = $conn->real_escape_string($selected_status);
-    $where_clauses[] = "`status` = '{$safe_status}'";
+    $where_clauses[] = "LOWER(`status`) = LOWER('{$safe_status}')";
 }
 
 $where_sql = implode(' AND ', $where_clauses);
@@ -225,15 +231,21 @@ if ($attendance_query && $attendance_query->num_rows > 0) {
     }
 }
 
-// Calculate Filtered Statistics for Logged-In Student based on active filters
+// Calculate Filtered Statistics for Logged-In Student based on month (or all records if month=all)
+$stats_where = ["`student_id` = {$student_id}"];
+if (!empty($selected_month) && $selected_month !== 'all') {
+    $stats_where[] = "DATE_FORMAT(`attendance_date`, '%Y-%m') = '{$conn->real_escape_string($selected_month)}'";
+}
+$stats_where_sql = implode(' AND ', $stats_where);
+
 $stats_query = $conn->query("SELECT 
     COUNT(*) as total_days,
-    SUM(CASE WHEN `status` = 'Present' THEN 1 ELSE 0 END) as present_days,
-    SUM(CASE WHEN `status` = 'Absent' THEN 1 ELSE 0 END) as absent_days,
-    SUM(CASE WHEN `status` = 'Late' THEN 1 ELSE 0 END) as late_days,
-    SUM(CASE WHEN `status` = 'Leave' THEN 1 ELSE 0 END) as leave_days,
-    SUM(CASE WHEN `status` = 'Outing' THEN 1 ELSE 0 END) as outing_days
-    FROM `attendance` WHERE {$where_sql}");
+    SUM(CASE WHEN LOWER(`status`) = 'present' THEN 1 ELSE 0 END) as present_days,
+    SUM(CASE WHEN LOWER(`status`) = 'absent' THEN 1 ELSE 0 END) as absent_days,
+    SUM(CASE WHEN LOWER(`status`) = 'late' THEN 1 ELSE 0 END) as late_days,
+    SUM(CASE WHEN LOWER(`status`) = 'leave' THEN 1 ELSE 0 END) as leave_days,
+    SUM(CASE WHEN LOWER(`status`) = 'outing' THEN 1 ELSE 0 END) as outing_days
+    FROM `attendance` WHERE {$stats_where_sql}");
 
 $stats = $stats_query ? $stats_query->fetch_assoc() : [
     'total_days' => 0,
@@ -512,86 +524,143 @@ ob_start();
   <?php unset($_SESSION['error']); ?>
 <?php endif; ?>
 
-<!-- 4 Key Stat Metrics Cards -->
+<!-- 4 Key Stat Metrics Cards (Interactive Filter Links) -->
 <div class="row mb-4">
   <!-- Total Recorded -->
   <div class="col-lg-3 col-sm-6 mb-3 mb-lg-0">
-    <div class="stat-card-widget">
-      <div class="d-flex align-items-center justify-content-between">
-        <div>
-          <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">Total Logged</span>
-          <h3 class="font-weight-bold text-dark mb-0"><?= $total_days ?> Days</h3>
-        </div>
-        <div class="stat-icon-wrapper stat-icon-rate">
-          <i class="fa-solid fa-calendar-days"></i>
+    <a href="attendance.php?status=all&month=<?= urlencode($selected_month) ?>" class="text-decoration-none d-block h-100">
+      <div class="stat-card-widget <?= ($selected_status === 'all') ? 'border-primary shadow-sm' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">Total Logged</span>
+            <h3 class="font-weight-bold text-dark mb-0"><?= $total_days ?> Days</h3>
+            <small class="text-muted">In selected period</small>
+          </div>
+          <div class="stat-icon-wrapper stat-icon-rate">
+            <i class="fa-solid fa-calendar-days"></i>
+          </div>
         </div>
       </div>
-    </div>
+    </a>
   </div>
 
   <!-- Present Days -->
   <div class="col-lg-3 col-sm-6 mb-3 mb-lg-0">
-    <div class="stat-card-widget">
-      <div class="d-flex align-items-center justify-content-between">
-        <div>
-          <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">Present Days</span>
-          <h3 class="font-weight-bold text-success mb-0"><?= $present_days ?></h3>
-        </div>
-        <div class="stat-icon-wrapper stat-icon-present">
-          <i class="fa-solid fa-user-check"></i>
+    <a href="attendance.php?status=Present&month=<?= urlencode($selected_month) ?>" class="text-decoration-none d-block h-100">
+      <div class="stat-card-widget <?= (strcasecmp($selected_status, 'Present') === 0) ? 'border-success shadow-sm' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">Present Days</span>
+            <h3 class="font-weight-bold text-success mb-0"><?= $present_days ?></h3>
+            <small class="text-success font-weight-bold">Verified in dorm</small>
+          </div>
+          <div class="stat-icon-wrapper stat-icon-present">
+            <i class="fa-solid fa-user-check"></i>
+          </div>
         </div>
       </div>
-    </div>
+    </a>
   </div>
 
-  <!-- Absent Days -->
+  <!-- Absent Days (Highlighted & Clickable) -->
   <div class="col-lg-3 col-sm-6 mb-3 mb-lg-0">
-    <div class="stat-card-widget">
-      <div class="d-flex align-items-center justify-content-between">
-        <div>
-          <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">Absent Days</span>
-          <h3 class="font-weight-bold text-danger mb-0"><?= $absent_days ?></h3>
-        </div>
-        <div class="stat-icon-wrapper stat-icon-absent">
-          <i class="fa-solid fa-user-xmark"></i>
+    <a href="attendance.php?status=Absent&month=<?= urlencode($selected_month) ?>" class="text-decoration-none d-block h-100">
+      <div class="stat-card-widget <?= (strcasecmp($selected_status, 'Absent') === 0) ? 'border-danger shadow-sm' : '' ?>" style="<?= ($absent_days > 0) ? 'background: #fff8f8; border: 1.5px solid #fecaca;' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-danger font-weight-700 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">
+              <i class="fa-solid fa-circle-exclamation mr-1"></i>Absent Days
+            </span>
+            <h3 class="font-weight-bold text-danger mb-0"><?= $absent_days ?></h3>
+            <small class="text-danger font-weight-bold">Click to view absent data &rarr;</small>
+          </div>
+          <div class="stat-icon-wrapper stat-icon-absent" style="box-shadow: 0 4px 10px rgba(220, 38, 38, 0.2);">
+            <i class="fa-solid fa-user-xmark"></i>
+          </div>
         </div>
       </div>
-    </div>
+    </a>
   </div>
 
   <!-- Late / Leave / Outing -->
   <div class="col-lg-3 col-sm-6">
-    <div class="stat-card-widget">
-      <div class="d-flex align-items-center justify-content-between">
-        <div>
-          <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">Leave / Outing</span>
-          <h3 class="font-weight-bold text-warning mb-0"><?= ($leave_days + $outing_days) ?></h3>
-        </div>
-        <div class="stat-icon-wrapper stat-icon-late">
-          <i class="fa-solid fa-clock-rotate-left"></i>
+    <a href="attendance.php?status=Leave&month=<?= urlencode($selected_month) ?>" class="text-decoration-none d-block h-100">
+      <div class="stat-card-widget <?= (in_array(strtolower($selected_status), ['leave', 'outing', 'late'])) ? 'border-warning shadow-sm' : '' ?>">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <span class="text-muted font-weight-600 d-block mb-1" style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">Leave / Outing</span>
+            <h3 class="font-weight-bold text-warning mb-0"><?= ($leave_days + $outing_days) ?></h3>
+            <small class="text-muted"><?= $late_days ?> Late &bull; <?= ($leave_days + $outing_days) ?> Out/Leave</small>
+          </div>
+          <div class="stat-icon-wrapper stat-icon-late">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+          </div>
         </div>
       </div>
-    </div>
+    </a>
   </div>
 </div>
 
-<!-- Filter Controls Card -->
+<?php if ($absent_days > 0 && strcasecmp($selected_status, 'Absent') !== 0): ?>
+  <div class="alert alert-danger d-flex flex-wrap align-items-center justify-content-between p-3 rounded-12 mb-4" role="alert" style="background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;">
+    <div class="d-flex align-items-center">
+      <i class="fa-solid fa-triangle-exclamation mr-2 font-weight-bold" style="font-size: 1.25rem;"></i>
+      <div>
+        <strong>Absent Notice:</strong> You have <strong><?= $absent_days ?></strong> absent day(s) recorded in your attendance history (approved leave or curfew absences).
+      </div>
+    </div>
+    <div class="mt-2 mt-md-0">
+      <a href="attendance.php?status=Absent&month=<?= urlencode($selected_month) ?>" class="btn btn-sm btn-danger font-weight-bold px-3 py-1 shadow-sm" style="border-radius: 8px;">
+        <i class="fa-solid fa-list-check mr-1"></i> View Absent Data
+      </a>
+    </div>
+  </div>
+<?php endif; ?>
+
+<!-- Filter Controls Card with Quick Status Navigation -->
 <div class="filter-control-card">
+  <div class="d-flex flex-wrap align-items-center mb-3 pb-2 border-bottom" style="gap: 6px;">
+    <span class="font-weight-bold text-dark mr-2" style="font-size: 0.82rem;">
+      <i class="fa-solid fa-filter text-primary mr-1"></i> Quick View:
+    </span>
+    <a href="attendance.php?status=all&month=<?= urlencode($selected_month) ?>" class="btn btn-sm <?= ($selected_status === 'all') ? 'btn-primary' : 'btn-light border' ?> font-weight-600" style="border-radius: 50px; font-size: 0.78rem;">
+      All Records (<?= $total_days ?>)
+    </a>
+    <a href="attendance.php?status=Present&month=<?= urlencode($selected_month) ?>" class="btn btn-sm <?= (strcasecmp($selected_status, 'Present') === 0) ? 'btn-success' : 'btn-light border text-success' ?> font-weight-600" style="border-radius: 50px; font-size: 0.78rem;">
+      <i class="fa-solid fa-check mr-1"></i> Present (<?= $present_days ?>)
+    </a>
+    <a href="attendance.php?status=Absent&month=<?= urlencode($selected_month) ?>" class="btn btn-sm <?= (strcasecmp($selected_status, 'Absent') === 0) ? 'btn-danger' : 'btn-light border text-danger' ?> font-weight-700" style="border-radius: 50px; font-size: 0.78rem; <?= ($absent_days > 0 && strcasecmp($selected_status, 'Absent') !== 0) ? 'background: #fee2e2; border-color: #fca5a5;' : '' ?>">
+      <i class="fa-solid fa-xmark mr-1"></i> Absent Data (<?= $absent_days ?>)
+    </a>
+    <a href="attendance.php?status=Late&month=<?= urlencode($selected_month) ?>" class="btn btn-sm <?= (strcasecmp($selected_status, 'Late') === 0) ? 'btn-warning text-dark' : 'btn-light border text-warning' ?> font-weight-600" style="border-radius: 50px; font-size: 0.78rem;">
+      Late (<?= $late_days ?>)
+    </a>
+    <a href="attendance.php?status=Leave&month=<?= urlencode($selected_month) ?>" class="btn btn-sm <?= (strcasecmp($selected_status, 'Leave') === 0) ? 'btn-info' : 'btn-light border text-info' ?> font-weight-600" style="border-radius: 50px; font-size: 0.78rem;">
+      Leave (<?= $leave_days ?>)
+    </a>
+    <a href="attendance.php?status=Absent&month=all" class="btn btn-sm btn-outline-danger font-weight-700 ml-auto" style="border-radius: 50px; font-size: 0.78rem;">
+      <i class="fa-solid fa-calendar-xmark mr-1"></i> View All-Time Absent Data
+    </a>
+  </div>
+
   <form method="GET" action="attendance.php" class="form-row align-items-end">
     <div class="col-md-4 col-sm-6 mb-2 mb-md-0">
       <label class="font-weight-600 text-dark mb-1" style="font-size: 0.83rem;">Select Month</label>
-      <input type="month" name="month" class="form-control custom-form-control" value="<?= htmlspecialchars($selected_month) ?>">
+      <div class="input-group">
+        <input type="month" name="month" class="form-control custom-form-control" value="<?= ($selected_month !== 'all') ? htmlspecialchars($selected_month) : '' ?>">
+      </div>
+      <small class="text-muted"><a href="attendance.php?month=all<?= ($selected_status !== 'all') ? '&status=' . urlencode($selected_status) : '' ?>" class="text-primary font-weight-bold">View All Months</a></small>
     </div>
 
     <div class="col-md-4 col-sm-6 mb-2 mb-md-0">
       <label class="font-weight-600 text-dark mb-1" style="font-size: 0.83rem;">Attendance Status</label>
       <select name="status" class="form-control custom-form-control">
         <option value="all" <?= ($selected_status == 'all') ? 'selected' : '' ?>>All Statuses</option>
-        <option value="Present" <?= ($selected_status == 'Present') ? 'selected' : '' ?>>Present</option>
-        <option value="Absent" <?= ($selected_status == 'Absent') ? 'selected' : '' ?>>Absent</option>
-        <option value="Late" <?= ($selected_status == 'Late') ? 'selected' : '' ?>>Late</option>
-        <option value="Leave" <?= ($selected_status == 'Leave') ? 'selected' : '' ?>>Leave</option>
-        <option value="Outing" <?= ($selected_status == 'Outing') ? 'selected' : '' ?>>Outing</option>
+        <option value="Present" <?= (strcasecmp($selected_status, 'Present') === 0) ? 'selected' : '' ?>>Present</option>
+        <option value="Absent" <?= (strcasecmp($selected_status, 'Absent') === 0) ? 'selected' : '' ?>>Absent</option>
+        <option value="Late" <?= (strcasecmp($selected_status, 'Late') === 0) ? 'selected' : '' ?>>Late</option>
+        <option value="Leave" <?= (strcasecmp($selected_status, 'Leave') === 0) ? 'selected' : '' ?>>Leave</option>
+        <option value="Outing" <?= (strcasecmp($selected_status, 'Outing') === 0) ? 'selected' : '' ?>>Outing</option>
       </select>
     </div>
 
@@ -702,6 +771,11 @@ ob_start();
                         <span class="badge-status badge-status-absent">
                           <i class="fa-solid fa-circle-xmark"></i> Absent
                         </span>
+                        <?php if (stripos($row['remarks'] ?? '', 'Leave') !== false): ?>
+                          <small class="badge badge-light border text-danger d-block mt-1 font-weight-bold px-2 py-0" style="font-size: 0.7rem; border-radius: 6px;">
+                            <i class="fa-solid fa-file-shield mr-1"></i>Approved Leave
+                          </small>
+                        <?php endif; ?>
                       <?php elseif (strcasecmp($status_val, 'Leave') === 0): ?>
                         <span class="badge-status badge-status-leave">
                           <i class="fa-solid fa-plane-departure"></i> Leave

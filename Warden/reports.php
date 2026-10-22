@@ -440,6 +440,134 @@ if ($blocks_occ_res && $blocks_occ_res->num_rows > 0) {
     }
 }
 
+// -------------------------------------------------------------
+// 7. LEAVE REQUESTS ANALYTICS & AUDIT (REQUESTERS)
+// -------------------------------------------------------------
+$leave_kpi_q = $conn->query("
+    SELECT 
+        COUNT(lr.id) AS total_leaves,
+        SUM(CASE WHEN LOWER(lr.status) = 'approved' THEN 1 ELSE 0 END) AS approved_cnt,
+        SUM(CASE WHEN LOWER(lr.status) = 'pending' THEN 1 ELSE 0 END) AS pending_cnt,
+        SUM(CASE WHEN LOWER(lr.status) = 'rejected' THEN 1 ELSE 0 END) AS rejected_cnt,
+        SUM(CASE WHEN LOWER(lr.status) = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_cnt
+    FROM leave_requests lr
+    JOIN users u ON lr.student_id = u.id
+    LEFT JOIN room_allocations ra ON u.id = ra.student_id AND ra.status = 'active'
+    WHERE (
+        (lr.start_date BETWEEN '{$safe_start}' AND '{$safe_end}')
+        OR (lr.end_date BETWEEN '{$safe_start}' AND '{$safe_end}')
+        OR (lr.start_date <= '{$safe_start}' AND lr.end_date >= '{$safe_end}')
+        OR (DATE(lr.created_at) BETWEEN '{$safe_start}' AND '{$safe_end}')
+    )
+");
+$leave_kpi = ($leave_kpi_q && $leave_kpi_q->num_rows > 0) ? $leave_kpi_q->fetch_assoc() : [];
+$leave_total     = intval($leave_kpi['total_leaves'] ?? 0);
+$leave_approved  = intval($leave_kpi['approved_cnt'] ?? 0);
+$leave_pending   = intval($leave_kpi['pending_cnt'] ?? 0);
+$leave_rejected  = intval($leave_kpi['rejected_cnt'] ?? 0);
+$leave_cancelled = intval($leave_kpi['cancelled_cnt'] ?? 0);
+
+$leave_audit_q = $conn->query("
+    SELECT 
+        lr.*,
+        u.name AS student_name,
+        u.email AS student_email,
+        u.phone AS student_phone,
+        u.profile_image AS student_profile_image,
+        blk.name AS block_name,
+        rm.room_number,
+        bd.bed_number,
+        COALESCE(w.name, u_rev.name, 'Authority') AS reviewer_name,
+        CASE 
+            WHEN w.name IS NOT NULL THEN 'Warden'
+            WHEN u_rev.name IS NOT NULL THEN 'Admin'
+            ELSE 'System'
+        END AS reviewer_role
+    FROM leave_requests lr
+    JOIN users u ON lr.student_id = u.id
+    LEFT JOIN room_allocations ra ON u.id = ra.student_id AND ra.status = 'active'
+    LEFT JOIN blocks blk ON ra.block_id = blk.id
+    LEFT JOIN rooms rm ON ra.room_id = rm.id
+    LEFT JOIN beds bd ON ra.bed_id = bd.id
+    LEFT JOIN wardens w ON lr.reviewed_by = w.id
+    LEFT JOIN users u_rev ON lr.reviewed_by = u_rev.id
+    WHERE (
+        (lr.start_date BETWEEN '{$safe_start}' AND '{$safe_end}')
+        OR (lr.end_date BETWEEN '{$safe_start}' AND '{$safe_end}')
+        OR (lr.start_date <= '{$safe_start}' AND lr.end_date >= '{$safe_end}')
+        OR (DATE(lr.created_at) BETWEEN '{$safe_start}' AND '{$safe_end}')
+    )
+    ORDER BY lr.id DESC
+");
+$leave_audit_list = [];
+if ($leave_audit_q && $leave_audit_q->num_rows > 0) {
+    while ($row = $leave_audit_q->fetch_assoc()) {
+        $leave_audit_list[] = $row;
+    }
+}
+
+// -------------------------------------------------------------
+// 8. OUTING REQUESTS ANALYTICS & AUDIT (REQUESTERS)
+// -------------------------------------------------------------
+$outing_kpi_q = $conn->query("
+    SELECT 
+        COUNT(o.id) AS total_outings,
+        SUM(CASE WHEN LOWER(o.status) = 'approved' THEN 1 ELSE 0 END) AS approved_cnt,
+        SUM(CASE WHEN LOWER(o.status) = 'pending' THEN 1 ELSE 0 END) AS pending_cnt,
+        SUM(CASE WHEN LOWER(o.status) = 'rejected' THEN 1 ELSE 0 END) AS rejected_cnt,
+        SUM(CASE WHEN LOWER(o.status) = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_cnt
+    FROM outing_requests o
+    JOIN users u ON o.student_id = u.id
+    LEFT JOIN room_allocations ra ON u.id = ra.student_id AND ra.status = 'active'
+    WHERE (
+        (o.outing_date BETWEEN '{$safe_start}' AND '{$safe_end}')
+        OR (DATE(o.created_at) BETWEEN '{$safe_start}' AND '{$safe_end}')
+    )
+");
+$outing_kpi = ($outing_kpi_q && $outing_kpi_q->num_rows > 0) ? $outing_kpi_q->fetch_assoc() : [];
+$outing_total     = intval($outing_kpi['total_outings'] ?? 0);
+$outing_approved  = intval($outing_kpi['approved_cnt'] ?? 0);
+$outing_pending   = intval($outing_kpi['pending_cnt'] ?? 0);
+$outing_rejected  = intval($outing_kpi['rejected_cnt'] ?? 0);
+$outing_cancelled = intval($outing_kpi['cancelled_cnt'] ?? 0);
+
+$outing_audit_q = $conn->query("
+    SELECT 
+        o.*,
+        u.name AS student_name,
+        u.email AS student_email,
+        u.phone AS student_phone,
+        u.profile_image AS student_profile_image,
+        blk.name AS block_name,
+        rm.room_number,
+        bd.bed_number,
+        COALESCE(w.name, u_rev.name, 'Authority') AS reviewer_name,
+        CASE 
+            WHEN w.name IS NOT NULL THEN 'Warden'
+            WHEN u_rev.name IS NOT NULL THEN 'Admin'
+            ELSE 'System'
+        END AS reviewer_role
+    FROM outing_requests o
+    JOIN users u ON o.student_id = u.id
+    LEFT JOIN room_allocations ra ON u.id = ra.student_id AND ra.status = 'active'
+    LEFT JOIN blocks blk ON ra.block_id = blk.id
+    LEFT JOIN rooms rm ON ra.room_id = rm.id
+    LEFT JOIN beds bd ON ra.bed_id = bd.id
+    LEFT JOIN wardens w ON o.reviewed_by = w.id
+    LEFT JOIN users u_rev ON o.reviewed_by = u_rev.id
+    WHERE (
+        (o.outing_date BETWEEN '{$safe_start}' AND '{$safe_end}')
+        OR (DATE(o.created_at) BETWEEN '{$safe_start}' AND '{$safe_end}')
+    )
+    ORDER BY o.id DESC
+");
+$outing_audit_list = [];
+if ($outing_audit_q && $outing_audit_q->num_rows > 0) {
+    while ($row = $outing_audit_q->fetch_assoc()) {
+        $outing_audit_list[] = $row;
+    }
+}
+
 ob_start();
 ?>
 
@@ -1016,6 +1144,48 @@ ob_start();
 
   </div>
 
+  <!-- Movement & Requesters KPI Summary Cards -->
+  <div class="row mb-4">
+    <!-- Leave Requesters KPI -->
+    <div class="col-md-6 mb-3 mb-md-0">
+      <div class="report-kpi-card" style="min-height: auto; padding: 1.15rem 1.35rem;">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div>
+            <span class="text-muted font-weight-700 text-uppercase" style="font-size: 0.74rem; letter-spacing: 0.5px;">Student Leave Requests</span>
+            <h4 class="font-weight-800 text-dark mb-0 mt-1"><?= $leave_total ?> Requests</h4>
+          </div>
+          <div class="report-kpi-icon" style="background: rgba(13, 148, 136, 0.1); color: #0d9488;">
+            <i class="fa-solid fa-person-walking-arrow-right"></i>
+          </div>
+        </div>
+        <div class="pt-2 border-top d-flex justify-content-between align-items-center">
+          <span class="text-success font-weight-700 small"><i class="fa-solid fa-circle-check mr-1"></i><?= $leave_approved ?> Approved</span>
+          <span class="text-warning font-weight-700 small"><i class="fa-solid fa-clock mr-1"></i><?= $leave_pending ?> Pending</span>
+          <span class="text-danger font-weight-700 small"><i class="fa-solid fa-circle-xmark mr-1"></i><?= $leave_rejected ?> Rejected</span>
+        </div>
+      </div>
+    </div>
+    <!-- Outing Requesters KPI -->
+    <div class="col-md-6">
+      <div class="report-kpi-card" style="min-height: auto; padding: 1.15rem 1.35rem;">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div>
+            <span class="text-muted font-weight-700 text-uppercase" style="font-size: 0.74rem; letter-spacing: 0.5px;">Student Outing Requests</span>
+            <h4 class="font-weight-800 text-dark mb-0 mt-1"><?= $outing_total ?> Requests</h4>
+          </div>
+          <div class="report-kpi-icon" style="background: rgba(5, 150, 105, 0.1); color: #059669;">
+            <i class="fa-solid fa-person-walking-luggage"></i>
+          </div>
+        </div>
+        <div class="pt-2 border-top d-flex justify-content-between align-items-center">
+          <span class="text-success font-weight-700 small"><i class="fa-solid fa-circle-check mr-1"></i><?= $outing_approved ?> Approved</span>
+          <span class="text-warning font-weight-700 small"><i class="fa-solid fa-clock mr-1"></i><?= $outing_pending ?> Pending</span>
+          <span class="text-danger font-weight-700 small"><i class="fa-solid fa-circle-xmark mr-1"></i><?= $outing_rejected ?> Rejected</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- =========================================================
        FINANCIAL & REVENUE ANALYTICS CHART
        ========================================================= -->
@@ -1251,6 +1421,16 @@ ob_start();
           <li class="nav-item">
             <a class="nav-link" id="att-tab" data-toggle="tab" href="#tab-attendance" role="tab">
               <i class="fa-solid fa-clipboard-user"></i> Daily Attendance Summary (<?= count($att_timeline) ?>)
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" id="leaves-tab" data-toggle="tab" href="#tab-leaves" role="tab">
+              <i class="fa-solid fa-person-walking-arrow-right text-success"></i> Leave Requests (<?= count($leave_audit_list) ?>)
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" id="outings-tab" data-toggle="tab" href="#tab-outings" role="tab">
+              <i class="fa-solid fa-person-walking-luggage" style="color: #059669;"></i> Outing Requests (<?= count($outing_audit_list) ?>)
             </a>
           </li>
           <li class="nav-item">
@@ -1685,6 +1865,198 @@ ob_start();
                 </table>
               </div>
             <?php endif; ?>
+          </div>
+
+          <!-- TAB: LEAVE REQUESTS AUDIT -->
+          <div class="tab-pane fade" id="tab-leaves" role="tabpanel">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h6 class="font-weight-800 text-dark mb-0">
+                <i class="fa-solid fa-person-walking-arrow-right text-success mr-2"></i> Student Leave Requesters & Outstation Permission Audit
+              </h6>
+              <span class="badge badge-success px-3 py-1 font-weight-700" style="background: #ecfdf5; color: #065f46; border: 1.5px solid #a7f3d0; border-radius: 50px; font-size: 0.8rem;">
+                Approved: <?= $leave_approved ?> / <?= $leave_total ?>
+              </span>
+            </div>
+
+            <div class="table-responsive">
+              <table class="table report-table table-hover align-middle mb-0" id="reportLeavesTable" style="width: 100%;">
+                <thead>
+                  <tr>
+                    <th style="width: 50px;">#</th>
+                    <th>Student Resident</th>
+                    <th>Room & Bed Allocation</th>
+                    <th>Leave Dates & Duration</th>
+                    <th>Destination</th>
+                    <th>Reason / Purpose</th>
+                    <th>Status</th>
+                    <th>Authority Review</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($leave_audit_list as $row): 
+                      $l_st = strtolower($row['status'] ?? 'pending');
+                      $badge_class = 'badge-stat-pill badge-p-late';
+                      if ($l_st === 'approved') $badge_class = 'badge-stat-pill badge-p-present';
+                      elseif ($l_st === 'rejected') $badge_class = 'badge-stat-pill badge-p-absent';
+                      elseif ($l_st === 'cancelled') $badge_class = 'badge badge-secondary';
+                      
+                      $s_date = date('d M Y', strtotime($row['start_date']));
+                      $e_date = date('d M Y', strtotime($row['end_date']));
+                      $days = max(1, round((strtotime($row['end_date']) - strtotime($row['start_date'])) / 86400) + 1);
+                      $initials = !empty($row['student_name']) ? strtoupper(substr($row['student_name'], 0, 1)) : 'S';
+                  ?>
+                    <tr>
+                      <td class="font-weight-bold text-muted"><?= $row['id'] ?></td>
+                      <td>
+                        <div class="d-flex align-items-center">
+                          <?php if (!empty($row['student_profile_image']) && file_exists("../student_profile/" . $row['student_profile_image'])): ?>
+                            <img src="../student_profile/<?= htmlspecialchars($row['student_profile_image']) ?>" class="student-avatar mr-2" alt="Student">
+                          <?php else: ?>
+                            <div class="student-avatar-placeholder mr-2" style="width:34px; height:34px;"><?= $initials ?></div>
+                          <?php endif; ?>
+                          <div>
+                            <div class="font-weight-bold text-dark"><?= htmlspecialchars($row['student_name'] ?? 'Unknown') ?></div>
+                            <small class="text-muted"><?= htmlspecialchars($row['student_phone'] ?? '') ?></small>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <div class="font-weight-bold text-dark"><?= htmlspecialchars($row['block_name'] ?? 'Hostel') ?></div>
+                        <small class="text-muted">Room <?= htmlspecialchars($row['room_number'] ?? 'N/A') ?><?= !empty($row['bed_number']) ? ' (Bed ' . htmlspecialchars($row['bed_number']) . ')' : '' ?></small>
+                      </td>
+                      <td>
+                        <div class="font-weight-bold text-dark"><?= $s_date ?> &rarr; <?= $e_date ?></div>
+                        <small class="badge badge-light border text-success font-weight-bold"><?= $days ?> Day(s)</small>
+                      </td>
+                      <td>
+                        <div class="font-weight-bold text-dark"><i class="fa-solid fa-location-dot text-danger mr-1"></i><?= htmlspecialchars($row['destination'] ?? 'N/A') ?></div>
+                      </td>
+                      <td>
+                        <small class="text-dark d-inline-block text-truncate" style="max-width: 180px;" title="<?= htmlspecialchars($row['reason'] ?? '') ?>">
+                          <?= htmlspecialchars($row['reason'] ?? '') ?>
+                        </small>
+                      </td>
+                      <td>
+                        <span class="<?= $badge_class ?> font-weight-bold text-uppercase" style="font-size: 0.72rem;">
+                          <?= ucfirst($l_st) ?>
+                        </span>
+                      </td>
+                      <td>
+                        <?php if (!empty($row['reviewed_at']) && $l_st !== 'pending'): ?>
+                          <div class="font-weight-bold text-dark" style="font-size: 0.82rem;">
+                            <?= htmlspecialchars($row['reviewer_name']) ?> <span class="badge badge-light border text-success" style="font-size: 0.65rem;"><?= htmlspecialchars($row['reviewer_role']) ?></span>
+                          </div>
+                          <small class="text-muted d-block"><?= date('d M Y', strtotime($row['reviewed_at'])) ?></small>
+                          <?php if (!empty($row['remarks'])): ?>
+                            <small class="text-muted font-italic d-inline-block text-truncate" style="max-width: 130px;" title="<?= htmlspecialchars($row['remarks']) ?>">
+                              "<?= htmlspecialchars($row['remarks']) ?>"
+                            </small>
+                          <?php endif; ?>
+                        <?php else: ?>
+                          <small class="text-muted font-italic">Pending Review</small>
+                        <?php endif; ?>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- TAB: OUTING REQUESTS AUDIT -->
+          <div class="tab-pane fade" id="tab-outings" role="tabpanel">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h6 class="font-weight-800 text-dark mb-0">
+                <i class="fa-solid fa-person-walking-luggage mr-2" style="color: #059669;"></i> Student Outing Requesters & Daily Passes Audit
+              </h6>
+              <span class="badge badge-success px-3 py-1 font-weight-700" style="background: #ecfdf5; color: #065f46; border: 1.5px solid #a7f3d0; border-radius: 50px; font-size: 0.8rem;">
+                Approved: <?= $outing_approved ?> / <?= $outing_total ?>
+              </span>
+            </div>
+
+            <div class="table-responsive">
+              <table class="table report-table table-hover align-middle mb-0" id="reportOutingsTable" style="width: 100%;">
+                <thead>
+                  <tr>
+                    <th style="width: 50px;">#</th>
+                    <th>Student Resident</th>
+                    <th>Room & Bed Allocation</th>
+                    <th>Outing Date & Timings</th>
+                    <th>Destination</th>
+                    <th>Reason / Purpose</th>
+                    <th>Status</th>
+                    <th>Authority Review</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($outing_audit_list as $row): 
+                      $o_st = strtolower($row['status'] ?? 'pending');
+                      $badge_class = 'badge-stat-pill badge-p-late';
+                      if ($o_st === 'approved') $badge_class = 'badge-stat-pill badge-p-present';
+                      elseif ($o_st === 'rejected') $badge_class = 'badge-stat-pill badge-p-absent';
+                      elseif ($o_st === 'cancelled') $badge_class = 'badge badge-secondary';
+                      
+                      $out_date = date('d M Y', strtotime($row['outing_date']));
+                      $exp_out = !empty($row['expected_out_time']) ? date('h:i A', strtotime($row['expected_out_time'])) : 'N/A';
+                      $exp_ret = !empty($row['expected_return_time']) ? date('h:i A', strtotime($row['expected_return_time'])) : 'N/A';
+                      $initials = !empty($row['student_name']) ? strtoupper(substr($row['student_name'], 0, 1)) : 'S';
+                  ?>
+                    <tr>
+                      <td class="font-weight-bold text-muted"><?= $row['id'] ?></td>
+                      <td>
+                        <div class="d-flex align-items-center">
+                          <?php if (!empty($row['student_profile_image']) && file_exists("../student_profile/" . $row['student_profile_image'])): ?>
+                            <img src="../student_profile/<?= htmlspecialchars($row['student_profile_image']) ?>" class="student-avatar mr-2" alt="Student">
+                          <?php else: ?>
+                            <div class="student-avatar-placeholder mr-2" style="width:34px; height:34px;"><?= $initials ?></div>
+                          <?php endif; ?>
+                          <div>
+                            <div class="font-weight-bold text-dark"><?= htmlspecialchars($row['student_name'] ?? 'Unknown') ?></div>
+                            <small class="text-muted"><?= htmlspecialchars($row['student_phone'] ?? '') ?></small>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <div class="font-weight-bold text-dark"><?= htmlspecialchars($row['block_name'] ?? 'Hostel') ?></div>
+                        <small class="text-muted">Room <?= htmlspecialchars($row['room_number'] ?? 'N/A') ?><?= !empty($row['bed_number']) ? ' (Bed ' . htmlspecialchars($row['bed_number']) . ')' : '' ?></small>
+                      </td>
+                      <td>
+                        <div class="font-weight-bold text-dark"><?= $out_date ?></div>
+                        <small class="text-muted"><?= $exp_out ?> &rarr; <?= $exp_ret ?></small>
+                      </td>
+                      <td>
+                        <div class="font-weight-bold text-dark"><i class="fa-solid fa-location-dot text-danger mr-1"></i><?= htmlspecialchars($row['destination'] ?? 'N/A') ?></div>
+                      </td>
+                      <td>
+                        <small class="text-dark d-inline-block text-truncate" style="max-width: 180px;" title="<?= htmlspecialchars($row['reason'] ?? '') ?>">
+                          <?= htmlspecialchars($row['reason'] ?? '') ?>
+                        </small>
+                      </td>
+                      <td>
+                        <span class="<?= $badge_class ?> font-weight-bold text-uppercase" style="font-size: 0.72rem;">
+                          <?= ucfirst($o_st) ?>
+                        </span>
+                      </td>
+                      <td>
+                        <?php if (!empty($row['reviewed_at']) && $o_st !== 'pending'): ?>
+                          <div class="font-weight-bold text-dark" style="font-size: 0.82rem;">
+                            <?= htmlspecialchars($row['reviewer_name']) ?> <span class="badge badge-light border text-success" style="font-size: 0.65rem;"><?= htmlspecialchars($row['reviewer_role']) ?></span>
+                          </div>
+                          <small class="text-muted d-block"><?= date('d M Y', strtotime($row['reviewed_at'])) ?></small>
+                          <?php if (!empty($row['remarks'])): ?>
+                            <small class="text-muted font-italic d-inline-block text-truncate" style="max-width: 130px;" title="<?= htmlspecialchars($row['remarks']) ?>">
+                              "<?= htmlspecialchars($row['remarks']) ?>"
+                            </small>
+                          <?php endif; ?>
+                        <?php else: ?>
+                          <small class="text-muted font-italic">Pending Review</small>
+                        <?php endif; ?>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
           </div>
 
         </div>
@@ -2138,6 +2510,24 @@ document.addEventListener("DOMContentLoaded", function() {
         ordering: true,
         order: [[2, "desc"]],
         language: { search: "Filter Visitors:" }
+      });
+    }
+
+    if (!$.fn.DataTable.isDataTable('#reportLeavesTable')) {
+      $('#reportLeavesTable').DataTable({
+        pageLength: 10,
+        ordering: true,
+        order: [[0, "desc"]],
+        language: { search: "Filter Leaves:" }
+      });
+    }
+
+    if (!$.fn.DataTable.isDataTable('#reportOutingsTable')) {
+      $('#reportOutingsTable').DataTable({
+        pageLength: 10,
+        ordering: true,
+        order: [[0, "desc"]],
+        language: { search: "Filter Outings:" }
       });
     }
 

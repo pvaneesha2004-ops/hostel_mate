@@ -744,6 +744,18 @@ if (!isset($_SESSION['admin_id'])) {
               <span class="menu-title">Attendance</span>
             </a>
           </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'leave_requests.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="leave_requests.php">
+              <i class="fa-solid fa-person-walking-arrow-right menu-icon"></i>
+              <span class="menu-title">Leave Requests</span>
+            </a>
+          </li>
+          <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'outing_requests.php') ? 'active' : ''; ?>">
+            <a class="nav-link" href="outing_requests.php">
+              <i class="fa-solid fa-person-walking-luggage menu-icon"></i>
+              <span class="menu-title">Outing Requests</span>
+            </a>
+          </li>
           <li class="nav-item <?php echo (basename($_SERVER['PHP_SELF']) == 'complaints.php') ? 'active' : ''; ?>">
             <a class="nav-link" href="complaints.php">
               <i class="fa-solid fa-triangle-exclamation menu-icon"></i>

@@ -419,7 +419,6 @@ ob_start();
                 <select name="status" id="add_status" class="form-control">
                     <option value="">Select Status</option>
                     <option value="published">Published</option>
-                    <option value="draft">Draft</option>
                     <option value="expired">Expired</option>
                 </select>
                 <small class="text-danger" id="add_status_err"></small>
@@ -479,7 +478,6 @@ ob_start();
                 <select name="status" id="edit_status" class="form-control">
                     <option value="">Select Status</option>
                     <option value="published">Published</option>
-                    <option value="draft">Draft</option>
                     <option value="expired">Expired</option>
                 </select>
                 <small class="text-danger" id="edit_status_err"></small>

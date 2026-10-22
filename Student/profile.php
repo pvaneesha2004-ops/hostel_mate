@@ -72,8 +72,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit();
 }
 
-// 1. Fetch User Profile Data from `users`
-$stmt = $conn->prepare("SELECT id, role, name, email, phone, profile_image, status, last_login, created_at FROM users WHERE id = ? LIMIT 1");
+// Handle Receipt Upload / Update (users.receipt)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_receipt') {
+    $doc_dir = "../student_docs/";
+    if (!file_exists($doc_dir)) {
+        mkdir($doc_dir, 0777, true);
+    }
+
+    if (isset($_FILES['receipt']) && $_FILES['receipt']['error'] === UPLOAD_ERR_OK) {
+        $file_tmp = $_FILES['receipt']['tmp_name'];
+        $file_name = $_FILES['receipt']['name'];
+        $file_size = $_FILES['receipt']['size'];
+        $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
+        $allowed_exts = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'webp', 'gif'];
+
+        if (!in_array($file_ext, $allowed_exts)) {
+            $_SESSION['error'] = "Invalid file format. Allowed formats: PDF, DOC, DOCX, JPG, JPEG, PNG, WEBP, GIF.";
+        } elseif ($file_size > 10 * 1024 * 1024) { // 10MB limit
+            $_SESSION['error'] = "File size exceeds 10MB limit.";
+        } else {
+            $new_receipt = 'receipt_' . $student_id . '_' . time() . '.' . $file_ext;
+            $dest_path = $doc_dir . $new_receipt;
+
+            if (move_uploaded_file($file_tmp, $dest_path)) {
+                // Fetch previous receipt to delete old file
+                $prev_stmt = $conn->prepare("SELECT receipt FROM users WHERE id = ?");
+                $prev_stmt->bind_param("i", $student_id);
+                $prev_stmt->execute();
+                $prev_res = $prev_stmt->get_result();
+                if ($prev_res && $prev_row = $prev_res->fetch_assoc()) {
+                    $old_file = $prev_row['receipt'];
+                    if (!empty($old_file) && file_exists($doc_dir . $old_file) && $old_file !== $new_receipt) {
+                        @unlink($doc_dir . $old_file);
+                    }
+                }
+                $prev_stmt->close();
+
+                // Update database
+                $up_stmt = $conn->prepare("UPDATE users SET receipt = ?, updated_at = NOW() WHERE id = ?");
+                $up_stmt->bind_param("si", $new_receipt, $student_id);
+                if ($up_stmt->execute()) {
+                    $_SESSION['msg'] = "Payment / Fee receipt uploaded successfully!";
+                } else {
+                    $_SESSION['error'] = "Failed to update receipt in database: " . $conn->error;
+                }
+                $up_stmt->close();
+            } else {
+                $_SESSION['error'] = "Failed to upload receipt file to server.";
+            }
+        }
+    } else {
+        $_SESSION['error'] = "Please select a valid file to upload.";
+    }
+
+    header("Location: profile.php");
+    exit();
+}
+
+// 1. Fetch User Profile Data from `users` (including room preference and receipt)
+$stmt = $conn->prepare("SELECT id, role, name, email, phone, profile_image, status, room_type, language, floor_type, receipt, last_login, created_at FROM users WHERE id = ? LIMIT 1");
 $stmt->bind_param("i", $student_id);
 $stmt->execute();
 $user_res = $stmt->get_result();
@@ -636,6 +693,22 @@ ob_start();
               <div class="info-value"><?= date('d M, Y (h:i A)', strtotime($student['created_at'])) ?></div>
             </div>
           </div>
+          <?php if (!empty($student['room_type']) || !empty($student['floor_type']) || !empty($student['language'])): ?>
+            <div class="col-12 mt-2 pt-2 border-top">
+              <div class="info-label mb-1">Registration Accommodation Preferences</div>
+              <div class="d-flex flex-wrap" style="gap: 6px;">
+                <?php if (!empty($student['room_type'])): ?>
+                  <span class="badge badge-light border text-primary px-2 py-1"><i class="fa-solid fa-bed mr-1"></i> <?= ucfirst(htmlspecialchars($student['room_type'])) ?> Room</span>
+                <?php endif; ?>
+                <?php if (!empty($student['floor_type'])): ?>
+                  <span class="badge badge-light border text-info px-2 py-1"><i class="fa-solid fa-layer-group mr-1"></i> <?= ucfirst(htmlspecialchars($student['floor_type'])) ?> Floor</span>
+                <?php endif; ?>
+                <?php if (!empty($student['language'])): ?>
+                  <span class="badge badge-light border px-2 py-1" style="color: #6366f1;"><i class="fa-solid fa-language mr-1"></i> <?= ucfirst(htmlspecialchars($student['language'])) ?></span>
+                <?php endif; ?>
+              </div>
+            </div>
+          <?php endif; ?>
         </div>
       </div>
     </div>
@@ -803,6 +876,77 @@ ob_start();
             <p class="text-muted small mb-0">Please submit your identification document to the hostel authority for KYC verification.</p>
           </div>
         <?php endif; ?>
+      </div>
+    </div>
+
+    <!-- 4. Fee & Payment Receipt Card (users table receipt) -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <h5><i class="fa-solid fa-receipt text-success mr-2"></i>Fee & Payment Receipt</h5>
+        <?php if (!empty($student['receipt']) && file_exists('../student_docs/' . $student['receipt'])): ?>
+          <span class="badge badge-success px-2 py-1"><i class="fa-solid fa-circle-check mr-1"></i> Receipt Attached</span>
+        <?php else: ?>
+          <span class="badge badge-warning text-dark px-2 py-1"><i class="fa-solid fa-clock mr-1"></i> Not Uploaded</span>
+        <?php endif; ?>
+      </div>
+      <div class="section-card-body">
+        <?php if (!empty($student['receipt']) && file_exists('../student_docs/' . $student['receipt'])): ?>
+          <?php 
+            $rec_ext = strtolower(pathinfo($student['receipt'], PATHINFO_EXTENSION));
+            $rec_is_img = in_array($rec_ext, ['jpg', 'jpeg', 'png', 'gif', 'webp']);
+          ?>
+          <div class="doc-preview-container mb-3">
+            <div class="d-flex align-items-center justify-content-between flex-wrap">
+              <div class="d-flex align-items-center text-left mb-2 mb-sm-0">
+                <span class="rounded p-2 mr-3 <?= $rec_is_img ? 'bg-success text-white' : 'bg-primary text-white' ?>" style="font-size: 1.5rem;">
+                  <i class="<?= $rec_is_img ? 'fa-regular fa-image' : 'fa-regular fa-file-pdf' ?>"></i>
+                </span>
+                <div>
+                  <div class="font-weight-bold text-dark"><?= htmlspecialchars($student['receipt']) ?></div>
+                  <small class="text-muted text-uppercase"><?= $rec_ext ?> File &bull; Official Registration / Fee Receipt</small>
+                </div>
+              </div>
+              <div>
+                <a href="../student_docs/<?= htmlspecialchars($student['receipt']) ?>" target="_blank" class="btn btn-outline-success btn-sm px-3 py-2 font-weight-600 shadow-sm mr-1">
+                  <i class="fa-solid fa-arrow-up-right-from-square mr-1"></i> View Receipt
+                </a>
+                <a href="../student_docs/<?= htmlspecialchars($student['receipt']) ?>" download class="btn btn-success btn-sm px-3 py-2 font-weight-600 shadow-sm">
+                  <i class="fa-solid fa-download mr-1"></i> Download
+                </a>
+              </div>
+            </div>
+          </div>
+          <?php if ($rec_is_img): ?>
+            <div class="text-center p-2 bg-light rounded border mb-3">
+              <a href="../student_docs/<?= htmlspecialchars($student['receipt']) ?>" target="_blank">
+                <img src="../student_docs/<?= htmlspecialchars($student['receipt']) ?>" alt="Payment Receipt" style="max-height: 220px; max-width: 100%; border-radius: 8px; object-fit: contain; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" />
+              </a>
+            </div>
+          <?php endif; ?>
+        <?php else: ?>
+          <div class="text-center py-4">
+            <div class="text-muted mb-2"><i class="fa-solid fa-receipt text-muted" style="font-size: 2.2rem; opacity: 0.5;"></i></div>
+            <h6 class="font-weight-bold text-dark mb-1">No Payment Receipt Uploaded</h6>
+            <p class="text-muted small mb-0">Upload your admission fee receipt or bank payment proof below.</p>
+          </div>
+        <?php endif; ?>
+
+        <!-- Form to upload / replace receipt -->
+        <div class="mt-3 pt-3 border-top">
+          <label class="font-weight-bold small text-dark mb-2">
+            <i class="fa-solid fa-arrow-up-from-bracket mr-1 text-primary"></i> <?= !empty($student['receipt']) ? 'Replace / Update Payment Receipt' : 'Upload Payment Receipt' ?>
+          </label>
+          <form action="profile.php" method="POST" enctype="multipart/form-data" class="d-flex flex-wrap align-items-center" style="gap: 8px;">
+            <input type="hidden" name="action" value="update_receipt">
+            <div class="flex-grow-1 mr-2 mb-2 mb-sm-0">
+              <input type="file" name="receipt" class="form-control form-control-sm" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp" required style="font-size: 0.82rem; height: calc(1.5em + 0.75rem + 2px);">
+            </div>
+            <button type="submit" class="btn btn-sm btn-primary px-3">
+              <i class="fa-solid fa-upload mr-1"></i> Upload Receipt
+            </button>
+          </form>
+          <small class="text-muted d-block mt-1">Allowed formats: PDF, DOC, DOCX, JPG, PNG, WEBP (Max 10MB)</small>
+        </div>
       </div>
     </div>
 
